@@ -32,17 +32,24 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
 
 1. **System Tray Integration**
    - Icon appears in macOS menubar
-   - Right-click shows menu with "Show" and "Quit" options
-   - Left-click opens/focuses the window
+   - Left-click shows menu with usage stats and options
+   - No window interface - pure menubar app
 
-2. **Window Management**
-   - No window shown on app launch
-   - Window created on-demand when user clicks tray or selects "Show"
-   - Window is reused if already created
+2. **Menu Options**
+   - **CC Usage** (title, disabled)
+   - **Opus 4: $10.23** (usage display, disabled)  
+   - **Sonnet 4: $2.11** (usage display, disabled)
+   - **Launch on startup** (checkbox, toggles autostart)
+   - **Quit** (with Cmd+Q shortcut)
 
-3. **macOS Specific**
+3. **Launch on Startup**
+   - Uses Tauri's autostart plugin
+   - Toggleable via menu checkbox
+   - Works across macOS, Windows, Linux
+
+4. **macOS Specific**
    - Uses `ActivationPolicy::Accessory` to hide from dock
-   - Supports Cmd+Q shortcut for quit
+   - Icon adapts to light/dark mode with `icon_as_template(true)`
 
 ## Build & Run
 
