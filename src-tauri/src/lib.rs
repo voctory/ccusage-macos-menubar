@@ -32,9 +32,11 @@ pub fn run() {
             let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
-            let tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::new()
+                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))?.to_owned())
+                .icon_as_template(true)
                 .menu(&menu)
-                .menu_on_left_click(false)
+                .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "quit" => {
                         app.exit(0);
