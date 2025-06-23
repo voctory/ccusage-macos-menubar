@@ -1,6 +1,7 @@
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, CheckMenuItemBuilder},
     tray::{TrayIconBuilder},
+    Manager,
 };
 use tauri_plugin_autostart::ManagerExt;
 
@@ -87,7 +88,7 @@ pub fn run() {
                         app.exit(0);
                     }
                     "launch_on_startup" => {
-                        let app_handle = app.handle().clone();
+                        let app_handle = app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
                             match toggle_autostart(app_handle).await {
                                 Ok(_new_state) => {
