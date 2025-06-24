@@ -82,14 +82,14 @@ fn format_model_name(model_name: &str) -> String {
 async fn fetch_session_data() -> Option<BlockData> {
     // Try multiple approaches to find and run ccusage
     let shell_commands = vec![
-        // Use shell to ensure proper PATH resolution
-        ("sh", vec!["-c", "npx ccusage@latest blocks --json --active"]),
-        // Try with explicit PATH that includes common npm locations
+        // Most likely to succeed: Try with explicit PATH that includes common npm locations
         ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH npx ccusage@latest blocks --json --active"]),
-        // Try global ccusage if installed
-        ("sh", vec!["-c", "ccusage blocks --json --active"]),
         // Try with explicit PATH for global ccusage
         ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH ccusage blocks --json --active"]),
+        // Use shell to ensure proper PATH resolution (may work in dev environments)
+        ("sh", vec!["-c", "npx ccusage@latest blocks --json --active"]),
+        // Try global ccusage if installed
+        ("sh", vec!["-c", "ccusage blocks --json --active"]),
         // Try direct npx if in PATH
         ("npx", vec!["ccusage@latest", "blocks", "--json", "--active"]),
         // Try direct ccusage command
@@ -142,26 +142,30 @@ async fn get_debug_info() -> String {
     // Get PATH environment variable
     debug_info.push_str("Environment:\n");
     if let Ok(path) = std::env::var("PATH") {
-        debug_info.push_str(&format!("PATH: {}\n\n", path));
+        debug_info.push_str(&format!("Default PATH: {}\n", path));
     } else {
-        debug_info.push_str("PATH: (not set)\n\n");
+        debug_info.push_str("Default PATH: (not set)\n");
     }
     
-    // Test which command
-    debug_info.push_str("Command availability:\n");
+    // Define extended PATH that we actually use
+    let extended_path = "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH";
+    debug_info.push_str(&format!("Extended PATH used: {}\n\n", extended_path));
+    
+    // Test commands with extended PATH
+    debug_info.push_str("Command availability (with extended PATH):\n");
     
     let commands_to_test = vec![
-        ("which npx", "npx location"),
-        ("which node", "node location"),
-        ("which ccusage", "ccusage location"),
-        ("npx --version", "npx version"),
-        ("node --version", "node version"),
-        ("ccusage --version 2>&1 || echo 'not found'", "ccusage version"),
+        (format!("{} which npx", extended_path), "npx location"),
+        (format!("{} which node", extended_path), "node location"),
+        (format!("{} which ccusage", extended_path), "ccusage location"),
+        (format!("{} npx --version", extended_path), "npx version"),
+        (format!("{} node --version", extended_path), "node version"),
+        (format!("{} ccusage --version 2>&1 || echo 'not found'", extended_path), "ccusage version"),
     ];
     
     for (cmd, desc) in commands_to_test {
         let output = Command::new("sh")
-            .args(&["-c", cmd])
+            .args(&["-c", &cmd])
             .output()
             .await;
             
@@ -171,7 +175,12 @@ async fn get_debug_info() -> String {
                 debug_info.push_str(&format!("{}: {}\n", desc, stdout.trim()));
             }
             Ok(output) => {
-                debug_info.push_str(&format!("{}: command failed ({})\n", desc, output.status));
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.trim().is_empty() {
+                    debug_info.push_str(&format!("{}: not found\n", desc));
+                } else {
+                    debug_info.push_str(&format!("{}: {}\n", desc, stderr.trim()));
+                }
             }
             Err(e) => {
                 debug_info.push_str(&format!("{}: error - {}\n", desc, e));
@@ -179,18 +188,24 @@ async fn get_debug_info() -> String {
         }
     }
     
-    // Test ccusage
+    // Test ccusage with extended PATH
     debug_info.push_str("\nTesting ccusage:\n");
     let ccusage_output = Command::new("sh")
-        .args(&["-c", "npx ccusage@latest --version"])
+        .args(&["-c", &format!("{} npx ccusage@latest --version", extended_path)])
         .output()
         .await;
         
     match ccusage_output {
         Ok(output) => {
-            debug_info.push_str(&format!("Exit status: {}\n", output.status));
-            debug_info.push_str(&format!("stdout: {}\n", String::from_utf8_lossy(&output.stdout)));
-            debug_info.push_str(&format!("stderr: {}\n", String::from_utf8_lossy(&output.stderr)));
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                debug_info.push_str(&format!("ccusage version: {}\n", stdout.trim()));
+            } else {
+                debug_info.push_str("ccusage: not available (npx ccusage@latest failed)\n");
+                if !output.stderr.is_empty() {
+                    debug_info.push_str(&format!("Error: {}\n", String::from_utf8_lossy(&output.stderr).trim()));
+                }
+            }
         }
         Err(e) => {
             debug_info.push_str(&format!("Error executing ccusage: {}\n", e));
