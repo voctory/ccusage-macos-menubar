@@ -23,12 +23,13 @@ magick -size ${SIZE}x${SIZE} xc:transparent \
 
 echo "Created star.png"
 
-# Create simple bars
+# Create simple bars (centered vertically)
+BOTTOM=$((SIZE * 3 / 4))  # Move bottom up from SIZE-2 to 3/4 of size
 magick -size ${SIZE}x${SIZE} xc:transparent \
     -fill white \
-    -draw "rectangle $((SIZE/6)),$((SIZE*2/3)) $((SIZE/3)),$((SIZE-2))" \
-    -draw "rectangle $((SIZE*5/12)),$((SIZE/2)) $((SIZE*7/12)),$((SIZE-2))" \
-    -draw "rectangle $((SIZE*2/3)),$((SIZE/3)) $((SIZE*5/6)),$((SIZE-2))" \
+    -draw "rectangle $((SIZE/6)),$((SIZE/2)) $((SIZE/3)),$BOTTOM" \
+    -draw "rectangle $((SIZE*5/12)),$((SIZE/3)) $((SIZE*7/12)),$BOTTOM" \
+    -draw "rectangle $((SIZE*2/3)),$((SIZE/4)) $((SIZE*5/6)),$BOTTOM" \
     "$OUTPUT_DIR/bars.png"
 
 echo "Created bars.png"
