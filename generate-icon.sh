@@ -13,11 +13,22 @@ mkdir -p "$OUTPUT_DIR"
 
 case "$TYPE" in
     "sparkle")
-        # Create a sparkle/star icon
+        # Create a sparkle/star icon using drawn shapes
+        CENTER=$((SIZE / 2))
+        RADIUS=$((SIZE * 3 / 8))
+        INNER_RADIUS=$((SIZE / 8))
+        
         convert -size ${SIZE}x${SIZE} xc:transparent \
-            -fill white -gravity center \
-            -font Arial-Bold -pointsize $((SIZE * 3 / 4)) \
-            -annotate +0+0 "✦" \
+            -fill white \
+            -draw "path 'M $CENTER,$((CENTER - RADIUS)) 
+                   L $((CENTER + INNER_RADIUS)),$((CENTER - INNER_RADIUS)) 
+                   L $((CENTER + RADIUS)),$CENTER 
+                   L $((CENTER + INNER_RADIUS)),$((CENTER + INNER_RADIUS)) 
+                   L $CENTER,$((CENTER + RADIUS)) 
+                   L $((CENTER - INNER_RADIUS)),$((CENTER + INNER_RADIUS)) 
+                   L $((CENTER - RADIUS)),$CENTER 
+                   L $((CENTER - INNER_RADIUS)),$((CENTER - INNER_RADIUS)) 
+                   Z'" \
             "$OUTPUT_DIR/sparkle.png"
         echo "Created sparkle icon at $OUTPUT_DIR/sparkle.png"
         ;;

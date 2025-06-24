@@ -270,7 +270,7 @@ pub fn run() {
                         
                         let tray = TrayIconBuilder::with_id("main")
                             .icon(
-                                tauri::image::Image::from_bytes(include_bytes!("../icons/sparkle.png"))
+                                tauri::image::Image::from_bytes(include_bytes!("../icons/bars.png"))
                                     .unwrap()
                                     .to_owned(),
                             )
