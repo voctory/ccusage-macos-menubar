@@ -101,9 +101,7 @@ async fn fetch_session_data() -> Option<(Vec<ModelBreakdown>, String, String)> {
             "blocks", 
             "--json", 
             "--breakdown", 
-            "--recent",
-            "--session-length",
-            "5"  // 5 hour rolling session
+            "--active"  // Only show the current active block
         ])
         .output()
         .await
@@ -248,8 +246,8 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         (cache.breakdowns.clone(), cache.session_start.clone(), cache.session_end.clone())
     };
 
-    // 5 Hr Session section
-    let session_title = MenuItemBuilder::with_id("session_title", "5 Hr Session")
+    // Current Session section
+    let session_title = MenuItemBuilder::with_id("session_title", "Current Session")
         .enabled(false)
         .build(app)?;
     menu_builder = menu_builder.item(&session_title);
@@ -278,10 +276,10 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
 
     // Session times
     if let (Some(start), Some(end)) = (session_start, session_end) {
-        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Session start: {}", start))
+        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start))
             .enabled(false)
             .build(app)?;
-        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Session end: {}", end))
+        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Expires: {}", end))
             .enabled(false)
             .build(app)?;
         menu_builder = menu_builder.item(&session_start_item).item(&session_end_item).separator();
@@ -373,6 +371,16 @@ pub fn run() {
                 
                 match build_menu(&app_handle).await {
                     Ok(menu) => {
+                        // Get initial title from cache
+                        let initial_title = {
+                            let cache = SESSION_CACHE.lock().unwrap();
+                            if cache.total_cost > 0.0 {
+                                Some(format!("${:.2}", cache.total_cost))
+                            } else {
+                                None
+                            }
+                        };
+                        
                         let tray = TrayIconBuilder::with_id("main")
                             .icon(
                                 tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
@@ -380,6 +388,7 @@ pub fn run() {
                                     .to_owned(),
                             )
                             .icon_as_template(true)
+                            .title(initial_title.unwrap_or_default())
                             .menu(&menu)
                             .show_menu_on_left_click(true)
                             .on_menu_event({

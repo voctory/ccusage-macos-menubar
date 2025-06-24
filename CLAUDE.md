@@ -43,12 +43,11 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Left-click shows menu with usage stats and options
    - No window interface - pure menubar app
 
-2. **All Time Periods in One Menu**
-   - **Today** section with model costs
-   - **5 Hr** section with current billing block costs
-   - **1 Hr** section with current hourly block costs  
-   - **Week** section with 7-day aggregated costs
-   - **Dividers** between each time period for clarity
+2. **Current Session Display**
+   - **Current Session** shows the active 5-hour billing block
+   - **Model breakdown** with costs and token counts (In/Out)
+   - **Session times** showing "Started" and "Expires" times
+   - **Total cost** displayed in the menubar (e.g., $9.51)
    - **Refresh** (manually update all data)
    - **Launch on startup** (checkbox, toggles autostart)
    - **Quit** (with Cmd+Q shortcut)
@@ -64,13 +63,12 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Works across macOS, Windows, Linux
 
 5. **Data Integration**
-   - **Today**: `npx ccusage@latest daily --json --breakdown`
-   - **5 Hrs/1 Hr**: `npx ccusage@latest blocks --json --breakdown --recent --session-length [1|5]`
-   - **Week**: `npx ccusage@latest daily --json --breakdown --since [7-days-ago]`
+   - **Current Session**: `npx ccusage@latest blocks --json --breakdown --active`
+   - Shows only the active 5-hour billing block
    - Caches data to handle network issues
    - Auto-formats model names (claude-opus-4-20250514 → "Opus 4")
    - Shows costs formatted as currency ($9.51)
-   - Aggregates weekly data across all days
+   - Displays accurate session start and expiration times
 
 6. **Smart Refresh & Performance**
    - **Concurrent data fetching** - all time periods updated simultaneously using `tokio::join!`
@@ -119,33 +117,25 @@ To verify the menubar behavior:
 
 **Normal state** (with ccusage data):
 ```
-Today
-Opus 4: $9.51
-Sonnet 4: $1.49
+CCUsage
 ────────────────
-5 Hr
-Opus 4: $2.30
-Sonnet 4: $0.45
+Current Session
+Opus 4: $9.51 (In: 21.8K, Out: 29.6K)
+Sonnet 4: $1.49 (In: 5.7K, Out: 4.9K)
 ────────────────
-1 Hr
-Opus 4: $0.15
-Sonnet 4: $0.08
-────────────────
-Week
-Opus 4: $45.30
-Sonnet 4: $12.85
-────────────────
-Refresh
+Started: 10:00 PM
+Expires: 3:00 AM
 ────────────────
 ☑ Launch on startup
+Refresh
 ────────────────
 Quit
 ```
 
-**Benefits of New Approach**:
-- **All data visible** at once - no need to switch between periods
-- **No menu closing** issues - menu stays stable
-- **Fast comparison** between time periods
+**Benefits of Current Approach**:
+- **Accurate session times** - shows actual 5-hour billing block start/end
+- **Clear cost display** - total cost always visible in menubar
+- **No confusion** - displays only the active session, not multiple blocks
 - **Smooth user experience** - no lag or jitter
 
 ## Notes
