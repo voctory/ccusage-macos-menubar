@@ -46,6 +46,18 @@ struct DailyUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct TokenCounts {
+    #[serde(rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    output_tokens: u64,
+    #[serde(rename = "cacheCreationInputTokens")]
+    cache_creation_tokens: u64,
+    #[serde(rename = "cacheReadInputTokens")]
+    cache_read_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BlockUsage {
     id: String,
     #[serde(rename = "startTime")]
@@ -57,6 +69,8 @@ struct BlockUsage {
     #[serde(rename = "costUSD")]
     cost_usd: f64,
     models: Vec<String>,
+    #[serde(rename = "tokenCounts")]
+    token_counts: TokenCounts,
     #[serde(rename = "modelBreakdowns", default)]
     model_breakdowns: Vec<ModelBreakdown>,
 }
@@ -152,14 +166,17 @@ async fn fetch_blocks_data(session_length: &str) -> Option<Vec<ModelBreakdown>> 
         if !latest_block.model_breakdowns.is_empty() {
             Some(latest_block.model_breakdowns.clone())
         } else {
-            // Estimate breakdown based on models present
+            // Create breakdown based on models present and token counts
             let cost_per_model = latest_block.cost_usd / latest_block.models.len() as f64;
+            let tokens_per_model = latest_block.token_counts.input_tokens / latest_block.models.len() as u64;
+            let output_tokens_per_model = latest_block.token_counts.output_tokens / latest_block.models.len() as u64;
+            
             Some(latest_block.models.iter().map(|model| ModelBreakdown {
                 model_name: model.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_tokens: 0,
-                cache_read_tokens: 0,
+                input_tokens: tokens_per_model,
+                output_tokens: output_tokens_per_model,
+                cache_creation_tokens: latest_block.token_counts.cache_creation_tokens / latest_block.models.len() as u64,
+                cache_read_tokens: latest_block.token_counts.cache_read_tokens / latest_block.models.len() as u64,
                 cost: cost_per_model,
             }).collect())
         }
@@ -454,7 +471,7 @@ pub fn run() {
                             .menu(&menu)
                             .show_menu_on_left_click(true)
                             .on_menu_event({
-                                let app_handle = app_handle.clone();
+                                let _app_handle = app_handle.clone();
                                 move |app, event| match event.id().as_ref() {
                                     "quit" => {
                                         app.exit(0);
