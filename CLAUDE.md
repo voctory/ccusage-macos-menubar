@@ -6,27 +6,35 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
 - Runs without a visible window on startup
 - Shows only in the macOS menubar (system tray)
 - Does not appear in the dock
-- Can show a window when clicked or via menu
+- Displays real-time Claude Code usage data from ccusage CLI
+- Shows daily usage costs per model (Opus 4, Sonnet 4, etc.)
 
 ## Architecture
 
 ### Backend (Rust)
 - **src-tauri/src/lib.rs**: Main application logic
-  - Sets up the system tray with menu items
-  - Handles tray events (clicks, menu selections)
-  - Manages window creation/visibility
+  - Sets up the system tray with dynamic menu items
+  - Integrates with ccusage CLI via `npx ccusage@latest daily --json --breakdown`
+  - Handles JSON parsing and data caching
+  - Manages autostart functionality
   - Sets macOS activation policy to `Accessory` (no dock icon)
 
 ### Frontend (React)
-- **src/App.tsx**: Minimal React component
-  - Simple UI shown when window is opened
-  - Demonstrates Tauri command invocation
+- **src/App.tsx**: Minimal React component (not used in menubar-only mode)
 
 ### Configuration
-- **Cargo.toml**: Enables `tray-icon` feature
+- **Cargo.toml**: 
+  - Enables `tray-icon`, `image-png` features
+  - Includes `tokio` for async process execution
+  - Includes `serde` for JSON parsing
 - **tauri.conf.json**: 
   - Empty windows array (no window on startup)
   - Enables macOS private API for dock hiding
+
+### Dependencies
+- **ccusage CLI**: Required external dependency
+  - Install with: `npm install -g ccusage` or use `npx ccusage@latest`
+  - Provides Claude Code usage analytics
 
 ## Key Features
 
@@ -35,23 +43,42 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Left-click shows menu with usage stats and options
    - No window interface - pure menubar app
 
-2. **Menu Options**
-   - **CC Usage** (title, disabled)
-   - **Opus 4: $10.23** (usage display, disabled)  
-   - **Sonnet 4: $2.11** (usage display, disabled)
+2. **Dynamic Menu Content**
+   - **CC Usage - Today** (title, disabled)
+   - **Real-time model costs** (e.g., "Opus 4: $9.51", "Sonnet 4: $1.49")
+   - **Refresh** (manually update usage data)
    - **Launch on startup** (checkbox, toggles autostart)
    - **Quit** (with Cmd+Q shortcut)
 
-3. **Launch on Startup**
+3. **Error States**
+   - **Install ccusage CLI** (clickable link to GitHub when ccusage not found)
+   - **No usage data** (when no conversations today)
+   - Graceful fallback to cached data on network issues
+
+4. **Launch on Startup**
    - Uses Tauri's autostart plugin
    - Toggleable via menu checkbox
    - Works across macOS, Windows, Linux
 
-4. **macOS Specific**
+5. **Data Integration**
+   - Fetches usage data via `npx ccusage@latest daily --json --breakdown`
+   - Caches data to handle network issues
+   - Auto-formats model names (claude-opus-4-20250514 → "Opus 4")
+   - Shows costs formatted as currency ($9.51)
+
+6. **macOS Specific**
    - Uses `ActivationPolicy::Accessory` to hide from dock
    - Icon adapts to light/dark mode with `icon_as_template(true)`
 
 ## Build & Run
+
+### Prerequisites
+1. **Install ccusage CLI** (required for usage data):
+   ```bash
+   npm install -g ccusage
+   # OR use npx (no installation needed):
+   npx ccusage@latest --help
+   ```
 
 ### Development
 ```bash
@@ -67,11 +94,42 @@ yarn tauri build
 ## Testing
 
 To verify the menubar behavior:
-1. Run the app - no window should appear
-2. Look for the app icon in the menubar
-3. Click the icon - a window should appear
-4. Right-click for menu options
-5. Verify the app doesn't show in the dock
+1. **First time setup**: Ensure ccusage CLI works: `npx ccusage@latest daily --json`
+2. **Run the app**: `yarn tauri dev` - no window should appear
+3. **Find the icon**: Look for the app icon in the macOS menubar
+4. **Test menu**: Left-click the icon to see usage data
+5. **Test refresh**: Click "Refresh" to update data
+6. **Test error state**: If ccusage isn't available, click "Install ccusage CLI"
+7. **Verify dock**: The app shouldn't appear in the dock
+
+### Menu Examples
+
+**Normal state** (with ccusage data):
+```
+CC Usage - Today
+────────────────
+Opus 4: $9.51
+Sonnet 4: $1.49
+────────────────
+Refresh
+────────────────
+☑ Launch on startup
+────────────────
+Quit
+```
+
+**Error state** (no ccusage):
+```
+CC Usage - Today
+────────────────
+Install ccusage CLI
+────────────────
+Refresh
+────────────────
+☑ Launch on startup
+────────────────
+Quit
+```
 
 ## Notes
 
