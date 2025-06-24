@@ -26,6 +26,4 @@ tokio = { version = "1", features = ["process", "macros", "time"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-autostart = "2"
 

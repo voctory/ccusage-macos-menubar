@@ -210,14 +210,6 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         menu_builder = menu_builder.item(&no_session).separator();
     }
 
-    // Launch on startup - only show if not already enabled
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    if !autostart_enabled {
-        let launch_on_startup = CheckMenuItemBuilder::with_id("launch_on_startup", "Launch on startup")
-            .checked(false)
-            .build(app)?;
-        menu_builder = menu_builder.item(&launch_on_startup);
-    }
 
     // Refresh button
     let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
@@ -233,40 +225,12 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
     Ok(menu_builder.build()?)
 }
 
-#[tauri::command]
-async fn toggle_autostart(app: tauri::AppHandle) -> Result<bool, String> {
-    let autostart_manager = app.autolaunch();
-    match autostart_manager.is_enabled() {
-        Ok(enabled) => {
-            if enabled {
-                autostart_manager.disable().map_err(|e| e.to_string())?;
-                Ok(false)
-            } else {
-                autostart_manager.enable().map_err(|e| e.to_string())?;
-                Ok(true)
-            }
-        }
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[tauri::command]
-async fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![
-            toggle_autostart, 
-            is_autostart_enabled
-        ])
+        .invoke_handler(tauri::generate_handler![])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -326,19 +290,6 @@ pub fn run() {
                                     }
                                     "quit" => {
                                         app.exit(0);
-                                    }
-                                    "launch_on_startup" => {
-                                        let app_handle = app.app_handle().clone();
-                                        tauri::async_runtime::spawn(async move {
-                                            match toggle_autostart(app_handle).await {
-                                                Ok(_new_state) => {
-                                                    // Menu state will be updated on next menu open
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("Failed to toggle autostart: {}", e);
-                                                }
-                                            }
-                                        });
                                     }
                                     "refresh" => {
                                         let app_handle = app.app_handle().clone();
