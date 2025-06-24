@@ -32,9 +32,8 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
   - Enables macOS private API for dock hiding
 
 ### Dependencies
-- **ccusage CLI**: Bundled with the app
-  - In development: Uses local node_modules
-  - In production: Falls back to `npx ccusage@latest` (requires Node.js)
+- **ccusage CLI**: Required external dependency
+  - Install with: `npm install -g ccusage` or use `npx ccusage@latest`
   - Provides Claude Code usage analytics
 
 ## Key Features
