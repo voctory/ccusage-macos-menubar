@@ -1,6 +1,6 @@
 use tauri::{
     tray::{TrayIconBuilder},
-    Manager,
+    Manager, WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::ManagerExt;
 use serde::{Deserialize, Serialize};
@@ -91,25 +91,7 @@ struct UsageData {
     week_data: Option<Vec<ModelBreakdown>>,
 }
 
-fn format_model_name(model_name: &str) -> String {
-    match model_name {
-        "claude-opus-4-20250514" => "Opus 4".to_string(),
-        "claude-sonnet-4-20250514" => "Sonnet 4".to_string(),
-        "claude-3-5-sonnet-20241022" => "Sonnet 3.5".to_string(),
-        "claude-3-haiku-20240307" => "Haiku".to_string(),
-        _ => {
-            if model_name.contains("opus") {
-                "Opus".to_string()
-            } else if model_name.contains("sonnet") {
-                "Sonnet".to_string()
-            } else if model_name.contains("haiku") {
-                "Haiku".to_string()
-            } else {
-                model_name.to_string()
-            }
-        }
-    }
-}
+// Model name formatting is now handled in the React component
 
 async fn fetch_today_data() -> Option<Vec<ModelBreakdown>> {
     let output = Command::new("npx")
@@ -276,13 +258,44 @@ pub fn run() {
             is_autostart_enabled
         ])
         .setup(|app| {
+            println!("🚀 Starting app setup...");
+            
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             let app_handle = app.handle().clone();
             
+            // Create hidden popup window at startup
+            println!("🪟 Creating popup window...");
+            let popup_window = WebviewWindowBuilder::new(
+                app,
+                "popup",
+                WebviewUrl::App("/".into())
+            )
+            .title("CCUsage Debug")
+            .inner_size(300.0, 400.0)
+            .resizable(true)  // Temporarily resizable for debugging
+            .decorations(true)  // Temporarily add decorations for debugging
+            .always_on_top(true)
+            .skip_taskbar(false)  // Show in taskbar temporarily for debugging
+            .transparent(false)  // Remove transparency for debugging
+            .shadow(true)
+            .visible(false)
+            .build();
+            
+            match popup_window {
+                Ok(window) => {
+                    println!("✅ Popup window created successfully: {}", window.label());
+                }
+                Err(e) => {
+                    println!("❌ Failed to create popup window: {}", e);
+                    return Err(e.into());
+                }
+            }
+
             // Create tray icon
-            let _tray = TrayIconBuilder::with_id("main")
+            println!("🔘 Creating tray icon...");
+            let tray_result = TrayIconBuilder::with_id("main")
                 .icon(
                     tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                         .unwrap()
@@ -292,21 +305,116 @@ pub fn run() {
                 .on_tray_icon_event({
                     let app_handle = app_handle.clone();
                     move |_tray, event| {
-                        if let tauri::tray::TrayIconEvent::Click { .. } = event {
-                            // Toggle popup window
-                            if let Some(window) = app_handle.get_webview_window("popup") {
-                                if window.is_visible().unwrap_or(false) {
-                                    let _ = window.hide();
-                                } else {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
+                        println!("🖱️ Tray icon event received: {:?}", event);
+                        
+                        match event {
+                            tauri::tray::TrayIconEvent::Click { position, rect, button_state, .. } => {
+                                println!("👆 Click event detected at position: {:?}, button_state: {:?}", position, button_state);
+                                println!("📍 Tray rect: {:?}", rect);
+                                
+                                // Only respond to button release (Up), not button press (Down)
+                                if button_state != tauri::tray::MouseButtonState::Up {
+                                    println!("🚫 Ignoring button press, waiting for release...");
+                                    return;
                                 }
+                                
+                                // Toggle popup window
+                                if let Some(window) = app_handle.get_webview_window("popup") {
+                                    println!("🪟 Found popup window");
+                                    let is_visible = window.is_visible().unwrap_or(false);
+                                    println!("👁️ Window visible: {}", is_visible);
+                                    
+                                    if is_visible {
+                                        println!("🙈 Hiding window...");
+                                        match window.hide() {
+                                            Ok(_) => println!("✅ Window hidden successfully"),
+                                            Err(e) => println!("❌ Failed to hide window: {}", e),
+                                        }
+                                    } else {
+                                        println!("👀 Showing window...");
+                                        
+                                        // Position window near tray icon
+                                        // Extract coordinates from Position and Size enums
+                                        let (tray_x, tray_y) = match rect.position {
+                                            tauri::Position::Physical(pos) => (pos.x as f64, pos.y as f64),
+                                            tauri::Position::Logical(pos) => (pos.x, pos.y),
+                                        };
+                                        let (tray_width, tray_height) = match rect.size {
+                                            tauri::Size::Physical(size) => (size.width as f64, size.height as f64),
+                                            tauri::Size::Logical(size) => (size.width, size.height),
+                                        };
+                                        
+                                        // Center window horizontally under tray icon
+                                        let window_x = tray_x + (tray_width / 2.0) - 150.0; // 150 = half window width
+                                        let window_y = tray_y + tray_height + 8.0; // 8px gap below tray
+                                        
+                                        println!("📍 Positioning window at ({}, {})", window_x, window_y);
+                                        
+                                        match window.set_position(tauri::PhysicalPosition::new(window_x as i32, window_y as i32)) {
+                                            Ok(_) => println!("✅ Window positioned successfully"),
+                                            Err(e) => println!("❌ Failed to position window: {}", e),
+                                        }
+                                        
+                                        match window.show() {
+                                            Ok(_) => {
+                                                println!("✅ Window shown successfully");
+                                                match window.set_focus() {
+                                                    Ok(_) => println!("✅ Window focused successfully"),
+                                                    Err(e) => println!("❌ Failed to focus window: {}", e),
+                                                }
+                                            }
+                                            Err(e) => println!("❌ Failed to show window: {}", e),
+                                        }
+                                    }
+                                } else {
+                                    println!("❌ Popup window not found! Attempting to create it...");
+                                    
+                                    // Try to create window dynamically
+                                    let window_result = WebviewWindowBuilder::new(
+                                        &app_handle,
+                                        "popup",
+                                        WebviewUrl::App("/".into())
+                                    )
+                                    .title("CCUsage")
+                                    .inner_size(300.0, 400.0)
+                                    .resizable(false)
+                                    .decorations(false)
+                                    .always_on_top(true)
+                                    .skip_taskbar(true)
+                                    .transparent(true)
+                                    .shadow(true)
+                                    .visible(true)  // Show immediately when created
+                                    .build();
+                                    
+                                    match window_result {
+                                        Ok(window) => {
+                                            println!("✅ Dynamic window created and shown");
+                                            let _ = window.set_focus();
+                                        }
+                                        Err(e) => {
+                                            println!("❌ Failed to create dynamic window: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            tauri::tray::TrayIconEvent::DoubleClick { .. } => {
+                                println!("👆👆 Double click event detected!");
+                            }
+                            _ => {
+                                println!("🤷 Other tray event: {:?}", event);
                             }
                         }
                     }
                 })
-                .build(&app_handle)
-                .unwrap();
+                .build(&app_handle);
+                
+            match tray_result {
+                Ok(_) => println!("✅ Tray icon created successfully"),
+                Err(e) => {
+                    println!("❌ Failed to create tray icon: {}", e);
+                    return Err(e.into());
+                }
+            }
 
             Ok(())
         })

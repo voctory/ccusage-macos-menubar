@@ -10,13 +10,15 @@ body {
   font-size: 13px;
   background: transparent;
   overflow: hidden;
+  margin: 0;
+  padding: 8px;
 }
 
 /* Popup container */
 .popup-container {
   position: relative;
-  width: 300px;
-  height: 400px;
+  width: 284px;
+  height: 384px;
   background: transparent;
 }
 
@@ -36,11 +38,10 @@ body {
 
 /* Main popup content */
 .popup-content {
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(20px);
+  background: #ffffff;  /* Solid white for debugging */
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 3px solid #007AFF;  /* Thick blue border for debugging */
   overflow: hidden;
   height: 100%;
   display: flex;

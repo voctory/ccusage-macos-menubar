@@ -66,11 +66,14 @@ function App() {
 
   const fetchData = async () => {
     try {
+      console.log("📊 Fetching usage data...");
       setLoading(true);
       setError(null);
       const data = await invoke<UsageData>("fetch_all_usage_data");
+      console.log("✅ Usage data received:", data);
       setUsageData(data);
     } catch (err) {
+      console.error("❌ Failed to fetch usage data:", err);
       setError(err as string);
     } finally {
       setLoading(false);
@@ -95,12 +98,18 @@ function App() {
   };
 
   useEffect(() => {
+    console.log("🎯 React App mounted, fetching data...");
     fetchData();
     
     // Check autostart status
     invoke<boolean>("is_autostart_enabled")
-      .then(setAutoStartEnabled)
-      .catch(console.error);
+      .then((enabled) => {
+        console.log("✅ Autostart status:", enabled);
+        setAutoStartEnabled(enabled);
+      })
+      .catch((err) => {
+        console.error("❌ Failed to get autostart status:", err);
+      });
   }, []);
 
   return (

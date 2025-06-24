@@ -10,22 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "popup",
-        "url": "/",
-        "width": 300,
-        "height": 400,
-        "resizable": false,
-        "fullscreen": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "shadow": true,
-        "transparent": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     },
