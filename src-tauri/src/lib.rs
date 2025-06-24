@@ -46,81 +46,67 @@ struct DailyUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct TokenCounts {
-    #[serde(rename = "inputTokens")]
-    input_tokens: u64,
-    #[serde(rename = "outputTokens")]
-    output_tokens: u64,
-    #[serde(rename = "cacheCreationInputTokens")]
-    cache_creation_tokens: u64,
-    #[serde(rename = "cacheReadInputTokens")]
-    cache_read_tokens: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BlockUsage {
-    id: String,
-    #[serde(rename = "startTime")]
-    start_time: String,
-    #[serde(rename = "endTime")]
-    end_time: String,
-    #[serde(rename = "isActive")]
-    is_active: bool,
-    #[serde(rename = "costUSD")]
-    cost_usd: f64,
-    models: Vec<String>,
-    #[serde(rename = "tokenCounts")]
-    token_counts: TokenCounts,
-    #[serde(rename = "modelBreakdowns", default)]
-    model_breakdowns: Vec<ModelBreakdown>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CcusageResponse {
     daily: Vec<DailyUsage>,
     totals: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CcusageBlocksResponse {
-    blocks: Vec<BlockUsage>,
-}
-
 #[derive(Debug, Clone)]
-struct AllPeriodsData {
-    today_data: Option<Vec<ModelBreakdown>>,
-    five_hr_data: Option<Vec<ModelBreakdown>>,
-    one_hr_data: Option<Vec<ModelBreakdown>>,
-    week_data: Option<Vec<ModelBreakdown>>,
+struct TodayData {
+    breakdowns: Option<Vec<ModelBreakdown>>,
+    total_cost: f64,
     last_updated: Option<Instant>,
 }
 
-static ALL_DATA_CACHE: Mutex<AllPeriodsData> = Mutex::new(AllPeriodsData {
-    today_data: None,
-    five_hr_data: None,
-    one_hr_data: None,
-    week_data: None,
+static TODAY_CACHE: Mutex<TodayData> = Mutex::new(TodayData {
+    breakdowns: None,
+    total_cost: 0.0,
     last_updated: None,
 });
 
+// Settings for persisting user preferences
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AppSettings {
+    show_cost_in_menubar: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            show_cost_in_menubar: true,
+        }
+    }
+}
+
 static IS_REFRESHING: AtomicBool = AtomicBool::new(false);
 
-fn format_relative_time(elapsed: std::time::Duration) -> String {
-    let secs = elapsed.as_secs();
-    if secs < 10 {
-        "just now".to_string()
-    } else if secs < 60 {
-        format!("{}s ago", secs)
-    } else if secs < 3600 {
-        let mins = secs / 60;
-        format!("{}m ago", mins)
-    } else if secs < 86400 {
-        let hours = secs / 3600;
-        format!("{}h ago", hours)
-    } else {
-        let days = secs / 86400;
-        format!("{}d ago", days)
+fn get_settings_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("ccusage-menubar")
+        .join("settings.json")
+}
+
+fn load_settings() -> AppSettings {
+    let path = get_settings_path();
+    if path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Ok(settings) = serde_json::from_str(&contents) {
+                return settings;
+            }
+        }
     }
+    AppSettings::default()
+}
+
+fn save_settings(settings: &AppSettings) -> Result<(), Box<dyn std::error::Error>> {
+    let path = get_settings_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let contents = serde_json::to_string_pretty(settings)?;
+    std::fs::write(path, contents)?;
+    Ok(())
 }
 
 fn format_model_name(model_name: &str) -> String {
@@ -160,220 +146,67 @@ async fn fetch_today_data() -> Option<Vec<ModelBreakdown>> {
     response.daily.first().map(|day| day.model_breakdowns.clone())
 }
 
-async fn fetch_blocks_data(session_length: &str) -> Option<Vec<ModelBreakdown>> {
-    let output = Command::new("npx")
-        .args(&[
-            "ccusage@latest", 
-            "blocks", 
-            "--json", 
-            "--breakdown", 
-            "--recent",
-            "--session-length",
-            session_length
-        ])
-        .output()
-        .await
-        .ok()?;
+// Removed fetch_blocks_data and fetch_week_data functions as they are no longer needed
 
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: CcusageBlocksResponse = serde_json::from_str(&stdout).ok()?;
-    
-    if let Some(latest_block) = response.blocks.first() {
-        if !latest_block.model_breakdowns.is_empty() {
-            Some(latest_block.model_breakdowns.clone())
-        } else {
-            // Create breakdown based on models present and token counts
-            let cost_per_model = latest_block.cost_usd / latest_block.models.len() as f64;
-            let tokens_per_model = latest_block.token_counts.input_tokens / latest_block.models.len() as u64;
-            let output_tokens_per_model = latest_block.token_counts.output_tokens / latest_block.models.len() as u64;
-            
-            Some(latest_block.models.iter().map(|model| ModelBreakdown {
-                model_name: model.clone(),
-                input_tokens: tokens_per_model,
-                output_tokens: output_tokens_per_model,
-                cache_creation_tokens: latest_block.token_counts.cache_creation_tokens / latest_block.models.len() as u64,
-                cache_read_tokens: latest_block.token_counts.cache_read_tokens / latest_block.models.len() as u64,
-                cost: cost_per_model,
-            }).collect())
-        }
-    } else {
-        None
-    }
-}
-
-async fn fetch_week_data() -> Option<Vec<ModelBreakdown>> {
-    let now = chrono::Utc::now();
-    let week_ago = now - chrono::Duration::days(7);
-    let since_date = week_ago.format("%Y%m%d").to_string();
-
-    let output = Command::new("npx")
-        .args(&[
-            "ccusage@latest", 
-            "daily", 
-            "--json", 
-            "--breakdown",
-            "--since",
-            &since_date
-        ])
-        .output()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: CcusageResponse = serde_json::from_str(&stdout).ok()?;
-    
-    // Aggregate all daily data for the week
-    let mut aggregated: std::collections::HashMap<String, ModelBreakdown> = std::collections::HashMap::new();
-    
-    for day in &response.daily {
-        for breakdown in &day.model_breakdowns {
-            let entry = aggregated.entry(breakdown.model_name.clone()).or_insert(ModelBreakdown {
-                model_name: breakdown.model_name.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_tokens: 0,
-                cache_read_tokens: 0,
-                cost: 0.0,
-            });
-            entry.input_tokens += breakdown.input_tokens;
-            entry.output_tokens += breakdown.output_tokens;
-            entry.cache_creation_tokens += breakdown.cache_creation_tokens;
-            entry.cache_read_tokens += breakdown.cache_read_tokens;
-            entry.cost += breakdown.cost;
-        }
-    }
-    
-    Some(aggregated.into_values().collect())
-}
-
-async fn refresh_all_data() {
+async fn refresh_today_data(app_handle: &tauri::AppHandle) {
     // Set refresh flag
     IS_REFRESHING.store(true, Ordering::Relaxed);
     
-    // Fetch all data concurrently
-    let (today, five_hr, one_hr, week) = tokio::join!(
-        fetch_today_data(),
-        fetch_blocks_data("5"),
-        fetch_blocks_data("1"),
-        fetch_week_data()
-    );
+    // Fetch today's data
+    let today_data = fetch_today_data().await;
+    
+    // Calculate total cost
+    let total_cost = if let Some(ref breakdowns) = today_data {
+        breakdowns.iter().map(|b| b.cost).sum()
+    } else {
+        0.0
+    };
 
     // Update cache
     {
-        let mut cache = ALL_DATA_CACHE.lock().unwrap();
-        cache.today_data = today;
-        cache.five_hr_data = five_hr;
-        cache.one_hr_data = one_hr;
-        cache.week_data = week;
+        let mut cache = TODAY_CACHE.lock().unwrap();
+        cache.breakdowns = today_data;
+        cache.total_cost = total_cost;
         cache.last_updated = Some(Instant::now());
     }
     
-    // Add small delay to let UI stabilize
-    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    // Update tray title if enabled
+    let settings = load_settings();
+    if settings.show_cost_in_menubar {
+        if let Some(tray) = app_handle.tray_by_id("main") {
+            let title = if total_cost > 0.0 {
+                format!("${:.2}", total_cost)
+            } else {
+                String::new()
+            };
+            let _ = tray.set_title(Some(title));
+        }
+    } else {
+        // Clear title if disabled
+        if let Some(tray) = app_handle.tray_by_id("main") {
+            let _ = tray.set_title(None::<String>);
+        }
+    }
     
     // Clear refresh flag
     IS_REFRESHING.store(false, Ordering::Relaxed);
 }
 
-async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
-    // No automatic refresh on menu open - only refresh via background task or manual refresh
-
+async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
     let mut menu_builder = MenuBuilder::new(app);
 
-    // CCUsage header with last updated time
-    let header_text = {
-        let cache = ALL_DATA_CACHE.lock().unwrap();
-        match cache.last_updated {
-            Some(last_update) => {
-                let elapsed = last_update.elapsed();
-                let relative_time = format_relative_time(elapsed);
-                format!("CCUsage (Refreshed {})", relative_time)
-            }
-            None => "CCUsage".to_string(),
-        }
-    };
-    let ccusage_header = MenuItemBuilder::with_id("ccusage_header", &header_text)
+    // CCUsage header (simple, no timestamp)
+    let ccusage_header = MenuItemBuilder::with_id("ccusage_header", "CCUsage")
         .build(app)?;
     menu_builder = menu_builder.item(&ccusage_header).separator();
 
     // Get data from cache
-    let cache_data = {
-        let cache = ALL_DATA_CACHE.lock().unwrap();
-        (
-            cache.today_data.clone(),
-            cache.five_hr_data.clone(),
-            cache.one_hr_data.clone(),
-            cache.week_data.clone(),
-        )
+    let today_data = {
+        let cache = TODAY_CACHE.lock().unwrap();
+        cache.breakdowns.clone()
     };
 
-    let (today_data, five_hr_data, one_hr_data, week_data) = cache_data;
-
-    // 1 Hour section (first)
-    let one_hr_title = MenuItemBuilder::with_id("1hr_title", "1 Hr")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&one_hr_title);
-
-    if let Some(breakdowns) = one_hr_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("1hr_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        let no_data = MenuItemBuilder::with_id("1hr_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // 5 Hour section (second)
-    let five_hr_title = MenuItemBuilder::with_id("5hr_title", "5 Hr")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&five_hr_title);
-
-    if let Some(breakdowns) = five_hr_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("5hr_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        let no_data = MenuItemBuilder::with_id("5hr_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // Today section (third)
+    // Today section
     let today_title = MenuItemBuilder::with_id("today_title", "Today")
         .enabled(false)
         .build(app)?;
@@ -401,34 +234,12 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
 
     menu_builder = menu_builder.separator();
 
-    // Week section (fourth)
-    let week_title = MenuItemBuilder::with_id("week_title", "Week")
-        .enabled(false)
+    // Show cost in menubar toggle
+    let settings = load_settings();
+    let show_cost = CheckMenuItemBuilder::with_id("show_cost_in_menubar", "Show cost in menubar")
+        .checked(settings.show_cost_in_menubar)
         .build(app)?;
-    menu_builder = menu_builder.item(&week_title);
-
-    if let Some(breakdowns) = week_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("week_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        // Check if ccusage is available
-        let install_link = MenuItemBuilder::with_id("install_ccusage", "Install ccusage CLI")
-            .build(app)?;
-        menu_builder = menu_builder.item(&install_link);
-    }
-
-    menu_builder = menu_builder.separator();
+    menu_builder = menu_builder.item(&show_cost);
 
     // Launch on startup
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
@@ -437,7 +248,7 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
         .build(app)?;
     menu_builder = menu_builder.item(&launch_on_startup);
 
-    // Refresh button (no timestamp here since it's in the header)
+    // Refresh button
     let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
         .build(app)?;
     menu_builder = menu_builder.item(&refresh).separator();
@@ -491,9 +302,8 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             
-            // Build initial menu
             // Start periodic refresh task
-            let _periodic_refresh_handle = app_handle.clone();
+            let periodic_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(120)); // 2 minutes
                 loop {
@@ -501,11 +311,11 @@ pub fn run() {
                     // Only refresh if not already refreshing and we have initial data
                     if !IS_REFRESHING.load(Ordering::Relaxed) {
                         let should_refresh = {
-                            let cache = ALL_DATA_CACHE.lock().unwrap();
+                            let cache = TODAY_CACHE.lock().unwrap();
                             cache.last_updated.is_some() // Only auto-refresh if we've refreshed at least once
                         };
                         if should_refresh {
-                            refresh_all_data().await;
+                            refresh_today_data(&periodic_handle).await;
                         }
                     }
                 }
@@ -513,9 +323,9 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 // Initial data refresh on app startup
-                refresh_all_data().await;
+                refresh_today_data(&app_handle).await;
                 
-                match build_menu_with_all_periods(&app_handle).await {
+                match build_menu(&app_handle).await {
                     Ok(menu) => {
                         let tray = TrayIconBuilder::with_id("main")
                             .icon(
@@ -538,6 +348,35 @@ pub fn run() {
                                     "quit" => {
                                         app.exit(0);
                                     }
+                                    "show_cost_in_menubar" => {
+                                        let app_handle = app.app_handle().clone();
+                                        tauri::async_runtime::spawn(async move {
+                                            // Toggle the setting
+                                            let mut settings = load_settings();
+                                            settings.show_cost_in_menubar = !settings.show_cost_in_menubar;
+                                            let _ = save_settings(&settings);
+                                            
+                                            // Update tray title immediately
+                                            if let Some(tray) = app_handle.tray_by_id("main") {
+                                                if settings.show_cost_in_menubar {
+                                                    // Show current cost
+                                                    let cost = {
+                                                        let cache = TODAY_CACHE.lock().unwrap();
+                                                        cache.total_cost
+                                                    };
+                                                    let title = if cost > 0.0 {
+                                                        format!("${:.2}", cost)
+                                                    } else {
+                                                        String::new()
+                                                    };
+                                                    let _ = tray.set_title(Some(title));
+                                                } else {
+                                                    // Hide cost
+                                                    let _ = tray.set_title(None::<String>);
+                                                }
+                                            }
+                                        });
+                                    }
                                     "launch_on_startup" => {
                                         let app_handle = app.app_handle().clone();
                                         tauri::async_runtime::spawn(async move {
@@ -551,16 +390,11 @@ pub fn run() {
                                             }
                                         });
                                     }
-                                    "install_ccusage" => {
-                                        let _ = tauri_plugin_opener::open_url(
-                                            "https://github.com/ryoppippi/ccusage",
-                                            None::<String>,
-                                        );
-                                    }
                                     "refresh" => {
+                                        let app_handle = app.app_handle().clone();
                                         tauri::async_runtime::spawn(async move {
                                             // Force refresh all data
-                                            refresh_all_data().await;
+                                            refresh_today_data(&app_handle).await;
                                             // Note: Menu will use fresh data on next open
                                         });
                                     }
