@@ -1,12 +1,9 @@
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, CheckMenuItemBuilder},
     tray::{TrayIconBuilder},
     Manager,
 };
 use tauri_plugin_autostart::ManagerExt;
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
-use std::time::Instant;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,41 +83,12 @@ struct CcusageBlocksResponse {
     blocks: Vec<BlockUsage>,
 }
 
-#[derive(Debug, Clone)]
-struct AllPeriodsData {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UsageData {
     today_data: Option<Vec<ModelBreakdown>>,
     five_hr_data: Option<Vec<ModelBreakdown>>,
     one_hr_data: Option<Vec<ModelBreakdown>>,
     week_data: Option<Vec<ModelBreakdown>>,
-    last_updated: Option<Instant>,
-}
-
-static ALL_DATA_CACHE: Mutex<AllPeriodsData> = Mutex::new(AllPeriodsData {
-    today_data: None,
-    five_hr_data: None,
-    one_hr_data: None,
-    week_data: None,
-    last_updated: None,
-});
-
-static IS_REFRESHING: AtomicBool = AtomicBool::new(false);
-
-fn format_relative_time(elapsed: std::time::Duration) -> String {
-    let secs = elapsed.as_secs();
-    if secs < 10 {
-        "just now".to_string()
-    } else if secs < 60 {
-        format!("{}s ago", secs)
-    } else if secs < 3600 {
-        let mins = secs / 60;
-        format!("{}m ago", mins)
-    } else if secs < 86400 {
-        let hours = secs / 3600;
-        format!("{}h ago", hours)
-    } else {
-        let days = secs / 86400;
-        format!("{}d ago", days)
-    }
 }
 
 fn format_model_name(model_name: &str) -> String {
@@ -254,10 +222,8 @@ async fn fetch_week_data() -> Option<Vec<ModelBreakdown>> {
     Some(aggregated.into_values().collect())
 }
 
-async fn refresh_all_data() {
-    // Set refresh flag
-    IS_REFRESHING.store(true, Ordering::Relaxed);
-    
+#[tauri::command]
+async fn fetch_all_usage_data() -> Result<UsageData, String> {
     // Fetch all data concurrently
     let (today, five_hr, one_hr, week) = tokio::join!(
         fetch_today_data(),
@@ -266,189 +232,12 @@ async fn refresh_all_data() {
         fetch_week_data()
     );
 
-    // Update cache
-    {
-        let mut cache = ALL_DATA_CACHE.lock().unwrap();
-        cache.today_data = today;
-        cache.five_hr_data = five_hr;
-        cache.one_hr_data = one_hr;
-        cache.week_data = week;
-        cache.last_updated = Some(Instant::now());
-    }
-    
-    // Add small delay to let UI stabilize
-    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-    
-    // Clear refresh flag
-    IS_REFRESHING.store(false, Ordering::Relaxed);
-}
-
-async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
-    // No automatic refresh on menu open - only refresh via background task or manual refresh
-
-    let mut menu_builder = MenuBuilder::new(app);
-
-    // CCUsage header with last updated time
-    let header_text = {
-        let cache = ALL_DATA_CACHE.lock().unwrap();
-        match cache.last_updated {
-            Some(last_update) => {
-                let elapsed = last_update.elapsed();
-                let relative_time = format_relative_time(elapsed);
-                format!("CCUsage (Refreshed {})", relative_time)
-            }
-            None => "CCUsage".to_string(),
-        }
-    };
-    let ccusage_header = MenuItemBuilder::with_id("ccusage_header", &header_text)
-        .build(app)?;
-    menu_builder = menu_builder.item(&ccusage_header).separator();
-
-    // Get data from cache
-    let cache_data = {
-        let cache = ALL_DATA_CACHE.lock().unwrap();
-        (
-            cache.today_data.clone(),
-            cache.five_hr_data.clone(),
-            cache.one_hr_data.clone(),
-            cache.week_data.clone(),
-        )
-    };
-
-    let (today_data, five_hr_data, one_hr_data, week_data) = cache_data;
-
-    // 1 Hour section (first)
-    let one_hr_title = MenuItemBuilder::with_id("1hr_title", "1 Hr")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&one_hr_title);
-
-    if let Some(breakdowns) = one_hr_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("1hr_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        let no_data = MenuItemBuilder::with_id("1hr_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // 5 Hour section (second)
-    let five_hr_title = MenuItemBuilder::with_id("5hr_title", "5 Hr")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&five_hr_title);
-
-    if let Some(breakdowns) = five_hr_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("5hr_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        let no_data = MenuItemBuilder::with_id("5hr_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // Today section (third)
-    let today_title = MenuItemBuilder::with_id("today_title", "Today")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&today_title);
-
-    if let Some(breakdowns) = today_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("today_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        let no_data = MenuItemBuilder::with_id("today_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // Week section (fourth)
-    let week_title = MenuItemBuilder::with_id("week_title", "Week")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&week_title);
-
-    if let Some(breakdowns) = week_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("week_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        // Check if ccusage is available
-        let install_link = MenuItemBuilder::with_id("install_ccusage", "Install ccusage CLI")
-            .build(app)?;
-        menu_builder = menu_builder.item(&install_link);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // Launch on startup
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    let launch_on_startup = CheckMenuItemBuilder::with_id("launch_on_startup", "Launch on startup")
-        .checked(autostart_enabled)
-        .build(app)?;
-    menu_builder = menu_builder.item(&launch_on_startup);
-
-    // Refresh button (no timestamp here since it's in the header)
-    let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
-        .build(app)?;
-    menu_builder = menu_builder.item(&refresh).separator();
-
-    // Quit
-    let quit = MenuItemBuilder::with_id("quit", "Quit")
-        .accelerator("Cmd+Q")
-        .build(app)?;
-    menu_builder = menu_builder.item(&quit);
-
-    Ok(menu_builder.build()?)
+    Ok(UsageData {
+        today_data: today,
+        five_hr_data: five_hr,
+        one_hr_data: one_hr,
+        week_data: week,
+    })
 }
 
 #[tauri::command]
@@ -482,6 +271,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            fetch_all_usage_data,
             toggle_autostart, 
             is_autostart_enabled
         ])
@@ -491,93 +281,32 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             
-            // Build initial menu
-            // Start periodic refresh task
-            let _periodic_refresh_handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(120)); // 2 minutes
-                loop {
-                    interval.tick().await;
-                    // Only refresh if not already refreshing and we have initial data
-                    if !IS_REFRESHING.load(Ordering::Relaxed) {
-                        let should_refresh = {
-                            let cache = ALL_DATA_CACHE.lock().unwrap();
-                            cache.last_updated.is_some() // Only auto-refresh if we've refreshed at least once
-                        };
-                        if should_refresh {
-                            refresh_all_data().await;
+            // Create tray icon
+            let _tray = TrayIconBuilder::with_id("main")
+                .icon(
+                    tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                        .unwrap()
+                        .to_owned(),
+                )
+                .icon_as_template(true)
+                .on_tray_icon_event({
+                    let app_handle = app_handle.clone();
+                    move |_tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                            // Toggle popup window
+                            if let Some(window) = app_handle.get_webview_window("popup") {
+                                if window.is_visible().unwrap_or(false) {
+                                    let _ = window.hide();
+                                } else {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            }
                         }
                     }
-                }
-            });
-
-            tauri::async_runtime::spawn(async move {
-                // Initial data refresh on app startup
-                refresh_all_data().await;
-                
-                match build_menu_with_all_periods(&app_handle).await {
-                    Ok(menu) => {
-                        let tray = TrayIconBuilder::with_id("main")
-                            .icon(
-                                tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
-                                    .unwrap()
-                                    .to_owned(),
-                            )
-                            .icon_as_template(true)
-                            .menu(&menu)
-                            .show_menu_on_left_click(true)
-                            .on_menu_event({
-                                let _app_handle = app_handle.clone();
-                                move |app, event| match event.id().as_ref() {
-                                    "ccusage_header" => {
-                                        let _ = tauri_plugin_opener::open_url(
-                                            "https://github.com/ryoppippi/ccusage",
-                                            None::<String>,
-                                        );
-                                    }
-                                    "quit" => {
-                                        app.exit(0);
-                                    }
-                                    "launch_on_startup" => {
-                                        let app_handle = app.app_handle().clone();
-                                        tauri::async_runtime::spawn(async move {
-                                            match toggle_autostart(app_handle).await {
-                                                Ok(_new_state) => {
-                                                    // Menu state will be updated on next menu open
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("Failed to toggle autostart: {}", e);
-                                                }
-                                            }
-                                        });
-                                    }
-                                    "install_ccusage" => {
-                                        let _ = tauri_plugin_opener::open_url(
-                                            "https://github.com/ryoppippi/ccusage",
-                                            None::<String>,
-                                        );
-                                    }
-                                    "refresh" => {
-                                        tauri::async_runtime::spawn(async move {
-                                            // Force refresh all data
-                                            refresh_all_data().await;
-                                            // Note: Menu will use fresh data on next open
-                                        });
-                                    }
-                                    _ => {}
-                                }
-                            })
-                            .build(&app_handle)
-                            .unwrap();
-
-                        // Store tray reference
-                        let _ = tray;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to build initial menu: {}", e);
-                    }
-                }
-            });
+                })
+                .build(&app_handle)
+                .unwrap();
 
             Ok(())
         })
