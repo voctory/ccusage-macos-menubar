@@ -3,7 +3,6 @@ use tauri::{
     tray::{TrayIconBuilder},
     Manager,
 };
-use tauri_plugin_autostart::ManagerExt;
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
