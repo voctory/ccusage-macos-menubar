@@ -4,7 +4,7 @@ use tauri::{
     Manager,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
 use tokio::process::Command;
 
@@ -270,7 +270,7 @@ pub fn run() {
                         
                         let tray = TrayIconBuilder::with_id("main")
                             .icon(
-                                tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                                tauri::image::Image::from_bytes(include_bytes!("../icons/sparkle.png"))
                                     .unwrap()
                                     .to_owned(),
                             )
@@ -295,7 +295,13 @@ pub fn run() {
                                         tauri::async_runtime::spawn(async move {
                                             // Force refresh all data
                                             refresh_session_data(&app_handle).await;
-                                            // Note: Menu will use fresh data on next open
+                                            
+                                            // Rebuild menu with fresh data
+                                            if let Ok(new_menu) = build_menu(&app_handle).await {
+                                                if let Some(tray) = app_handle.try_state::<Arc<tauri::tray::TrayIcon>>() {
+                                                    let _ = tray.set_menu(Some(new_menu));
+                                                }
+                                            }
                                         });
                                     }
                                     _ => {}
@@ -304,8 +310,8 @@ pub fn run() {
                             .build(&app_handle)
                             .unwrap();
 
-                        // Store tray reference
-                        let _ = tray;
+                        // Store tray reference in app state
+                        app_handle.manage(Arc::new(tray));
                     }
                     Err(e) => {
                         eprintln!("Failed to build initial menu: {}", e);
