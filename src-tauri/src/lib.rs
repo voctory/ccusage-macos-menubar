@@ -1,11 +1,11 @@
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, CheckMenuItemBuilder, SubmenuBuilder},
-    tray::{TrayIconBuilder},
-    Manager,
+    tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
+    Manager, AppHandle,
 };
 use tauri_plugin_autostart::ManagerExt;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
 use std::time::Instant;
 use tokio::process::Command;
 
@@ -116,6 +116,71 @@ static USAGE_CACHE: Mutex<UsageCache> = Mutex::new(UsageCache {
     last_updated: None,
     last_error: None,
 });
+
+static TRAY_HANDLE: Mutex<Option<Arc<AppHandle>>> = Mutex::new(None);
+
+fn get_settings_file_path() -> Result<std::path::PathBuf, String> {
+    let config_dir = dirs::config_dir()
+        .ok_or("Could not find config directory")?;
+    let app_dir = config_dir.join("ccusage-macos-menubar");
+    std::fs::create_dir_all(&app_dir)
+        .map_err(|e| format!("Could not create config directory: {}", e))?;
+    Ok(app_dir.join("settings.json"))
+}
+
+#[derive(Serialize, Deserialize)]
+struct AppSettings {
+    current_period: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            current_period: "today".to_string(),
+        }
+    }
+}
+
+fn load_settings() -> AppSettings {
+    match get_settings_file_path() {
+        Ok(path) => {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                serde_json::from_str(&content).unwrap_or_default()
+            } else {
+                AppSettings::default()
+            }
+        }
+        Err(_) => AppSettings::default(),
+    }
+}
+
+fn save_settings(settings: &AppSettings) {
+    if let Ok(path) = get_settings_file_path() {
+        if let Ok(content) = serde_json::to_string_pretty(settings) {
+            let _ = std::fs::write(&path, content);
+        }
+    }
+}
+
+async fn refresh_menu_data() {
+    let app_handle = {
+        let tray_handle_guard = TRAY_HANDLE.lock().unwrap();
+        tray_handle_guard.as_ref().map(|h| h.as_ref().clone())
+    };
+    
+    if let Some(app_handle) = app_handle {
+        match build_menu_with_usage_data(&app_handle).await {
+            Ok(new_menu) => {
+                if let Some(tray) = app_handle.tray_by_id("main") {
+                    let _ = tray.set_menu(Some(new_menu));
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to refresh menu: {}", e);
+            }
+        }
+    }
+}
 
 #[tauri::command]
 async fn fetch_usage_data(period: String) -> Result<String, String> {
@@ -485,11 +550,30 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             
+            // Load saved settings and set initial period
+            let settings = load_settings();
+            {
+                let mut cache = USAGE_CACHE.lock().unwrap();
+                cache.current_period = match settings.current_period.as_str() {
+                    "today" => TimePeriod::Today,
+                    "5hrs" => TimePeriod::FiveHours,
+                    "1hr" => TimePeriod::OneHour,
+                    "week" => TimePeriod::Week,
+                    _ => TimePeriod::Today,
+                };
+            }
+            
+            // Store app handle for menu refreshing
+            {
+                let mut tray_handle = TRAY_HANDLE.lock().unwrap();
+                *tray_handle = Some(Arc::new(app_handle.clone()));
+            }
+            
             // Build initial menu
             tauri::async_runtime::spawn(async move {
                 match build_menu_with_usage_data(&app_handle).await {
                     Ok(menu) => {
-                        let tray = TrayIconBuilder::new()
+                        let tray = TrayIconBuilder::with_id("main")
                             .icon(
                                 tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                                     .unwrap()
@@ -498,6 +582,19 @@ pub fn run() {
                             .icon_as_template(true)
                             .menu(&menu)
                             .show_menu_on_left_click(true)
+                            .on_tray_icon_event(|_tray, event| {
+                                if let TrayIconEvent::Click {
+                                    button: MouseButton::Left,
+                                    button_state: MouseButtonState::Up,
+                                    ..
+                                } = event
+                                {
+                                    // Auto-refresh data when menu is about to open
+                                    tauri::async_runtime::spawn(async move {
+                                        refresh_menu_data().await;
+                                    });
+                                }
+                            })
                             .on_menu_event({
                                 let app_handle = app_handle.clone();
                                 move |app, event| match event.id().as_ref() {
@@ -536,14 +633,25 @@ pub fn run() {
                                         tauri::async_runtime::spawn(async move {
                                             // Update period if different
                                             if event.id().as_ref().starts_with("period_") {
-                                                let mut cache = USAGE_CACHE.lock().unwrap();
-                                                cache.current_period = match period {
+                                                let new_period = match period {
                                                     "today" => TimePeriod::Today,
                                                     "5hrs" => TimePeriod::FiveHours,
                                                     "1hr" => TimePeriod::OneHour,
                                                     "week" => TimePeriod::Week,
                                                     _ => TimePeriod::Today,
                                                 };
+                                                
+                                                // Update cache
+                                                {
+                                                    let mut cache = USAGE_CACHE.lock().unwrap();
+                                                    cache.current_period = new_period;
+                                                }
+                                                
+                                                // Save settings to persist the selection
+                                                let settings = AppSettings {
+                                                    current_period: period.to_string(),
+                                                };
+                                                save_settings(&settings);
                                             }
                                             
                                             // Rebuild menu with fresh data
