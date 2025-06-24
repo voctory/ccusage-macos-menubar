@@ -105,6 +105,22 @@ static ALL_DATA_CACHE: Mutex<AllPeriodsData> = Mutex::new(AllPeriodsData {
 
 static IS_REFRESHING: AtomicBool = AtomicBool::new(false);
 
+fn format_relative_time(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        let mins = secs / 60;
+        format!("{}m ago", mins)
+    } else if secs < 86400 {
+        let hours = secs / 3600;
+        format!("{}h ago", hours)
+    } else {
+        let days = secs / 86400;
+        format!("{}d ago", days)
+    }
+}
+
 fn format_model_name(model_name: &str) -> String {
     match model_name {
         "claude-opus-4-20250514" => "Opus 4".to_string(),
@@ -412,8 +428,19 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
 
     menu_builder = menu_builder.separator();
 
-    // Refresh button
-    let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
+    // Refresh button with last updated time
+    let refresh_text = {
+        let cache = ALL_DATA_CACHE.lock().unwrap();
+        match cache.last_updated {
+            Some(last_update) => {
+                let elapsed = last_update.elapsed();
+                let relative_time = format_relative_time(elapsed);
+                format!("Refresh ({})", relative_time)
+            }
+            None => "Refresh".to_string(),
+        }
+    };
+    let refresh = MenuItemBuilder::with_id("refresh", &refresh_text)
         .build(app)?;
     menu_builder = menu_builder.item(&refresh).separator();
 
@@ -474,6 +501,25 @@ pub fn run() {
             let app_handle = app.handle().clone();
             
             // Build initial menu
+            // Start periodic refresh task
+            let _periodic_refresh_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(120)); // 2 minutes
+                loop {
+                    interval.tick().await;
+                    // Only refresh if not already refreshing and we have initial data
+                    if !IS_REFRESHING.load(Ordering::Relaxed) {
+                        let should_refresh = {
+                            let cache = ALL_DATA_CACHE.lock().unwrap();
+                            cache.last_updated.is_some() // Only auto-refresh if we've refreshed at least once
+                        };
+                        if should_refresh {
+                            refresh_all_data().await;
+                        }
+                    }
+                }
+            });
+
             tauri::async_runtime::spawn(async move {
                 match build_menu_with_all_periods(&app_handle).await {
                     Ok(menu) => {
