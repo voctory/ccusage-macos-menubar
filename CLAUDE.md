@@ -163,3 +163,48 @@ Quit
 - Window size is set to 400x300 when created
 - The tray icon uses the default app icon from `src-tauri/icons/`
 - Frontend can be expanded with any React components as needed
+
+## GitHub Actions Release Workflow
+
+Two release workflows are available:
+
+### 1. release.yml (Full Release with Code Signing)
+Requires Apple Developer certificates. To use:
+1. Set up the following GitHub secrets:
+   - `APPLE_CERTIFICATE`: Base64 encoded .p12 certificate
+   - `APPLE_CERTIFICATE_PASSWORD`: Certificate password
+   - `APPLE_SIGNING_IDENTITY`: Identity name from certificate
+   - `APPLE_ID`: Apple Developer account email
+   - `APPLE_PASSWORD`: App-specific password
+   - `APPLE_TEAM_ID`: Apple Developer Team ID
+
+2. Trigger manually from Actions tab:
+   - Version: e.g., `v1.0.0`
+   - Draft: Create as draft (default: true)
+   - Pre-release: Mark as pre-release (default: false)
+
+### 2. release-simple.yml (Simple Release without Code Signing)
+No Apple Developer account required. To use:
+1. Go to Actions tab on GitHub
+2. Select "Release (Simple)" workflow
+3. Click "Run workflow"
+4. Enter version (e.g., `1.0.0` - without v prefix)
+5. The workflow will:
+   - Update version in Cargo.toml and tauri.conf.json
+   - Build for both ARM64 and x64 macOS
+   - Create a draft release with DMG files
+   - Note: Users will need to bypass Gatekeeper on first run
+
+### Manual Release Process
+If you prefer to build and release manually:
+```bash
+# Build for current architecture
+yarn tauri build
+
+# Build for specific architecture
+yarn tauri build -- --target aarch64-apple-darwin  # ARM64
+yarn tauri build -- --target x86_64-apple-darwin   # Intel
+
+# Output will be in:
+# src-tauri/target/release/bundle/dmg/
+```
