@@ -5,7 +5,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::ManagerExt;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
 use tokio::process::Command;
 
@@ -102,6 +102,8 @@ static ALL_DATA_CACHE: Mutex<AllPeriodsData> = Mutex::new(AllPeriodsData {
     week_data: None,
     last_updated: None,
 });
+
+static IS_REFRESHING: AtomicBool = AtomicBool::new(false);
 
 fn format_model_name(model_name: &str) -> String {
     match model_name {
@@ -235,6 +237,9 @@ async fn fetch_week_data() -> Option<Vec<ModelBreakdown>> {
 }
 
 async fn refresh_all_data() {
+    // Set refresh flag
+    IS_REFRESHING.store(true, Ordering::Relaxed);
+    
     // Fetch all data concurrently
     let (today, five_hr, one_hr, week) = tokio::join!(
         fetch_today_data(),
@@ -252,15 +257,26 @@ async fn refresh_all_data() {
         cache.week_data = week;
         cache.last_updated = Some(Instant::now());
     }
+    
+    // Add small delay to let UI stabilize
+    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    
+    // Clear refresh flag
+    IS_REFRESHING.store(false, Ordering::Relaxed);
 }
 
 async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
     // Check if we need to refresh (no data or data is older than 5 minutes)
+    // But skip if a manual refresh is already in progress
     let should_refresh = {
-        let cache = ALL_DATA_CACHE.lock().unwrap();
-        match cache.last_updated {
-            Some(last_update) => last_update.elapsed().as_secs() > 300, // 5 minutes
-            None => true, // No data yet
+        if IS_REFRESHING.load(Ordering::Relaxed) {
+            false // Don't refresh if already refreshing
+        } else {
+            let cache = ALL_DATA_CACHE.lock().unwrap();
+            match cache.last_updated {
+                Some(last_update) => last_update.elapsed().as_secs() > 300, // 5 minutes
+                None => true, // No data yet
+            }
         }
     };
 
