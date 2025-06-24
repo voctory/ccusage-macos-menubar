@@ -46,11 +46,13 @@ struct BlocksResponse {
 struct SessionData {
     active_block: Option<BlockData>,
     last_updated: Option<Instant>,
+    ccusage_available: bool,
 }
 
 static SESSION_CACHE: Mutex<SessionData> = Mutex::new(SessionData {
     active_block: None,
     last_updated: None,
+    ccusage_available: false,
 });
 
 // Removed AppSettings as we now always show cost
@@ -79,7 +81,7 @@ fn format_model_name(model_name: &str) -> String {
     }
 }
 
-async fn fetch_session_data() -> Option<BlockData> {
+async fn fetch_session_data() -> (Option<BlockData>, bool) {
     // Try multiple approaches to find and run ccusage
     let shell_commands = vec![
         // Most likely to succeed: Try with explicit PATH that includes common npm locations
@@ -109,7 +111,9 @@ async fn fetch_session_data() -> Option<BlockData> {
                 // Try to parse the response
                 match serde_json::from_str::<BlocksResponse>(&stdout) {
                     Ok(response) => {
-                        return response.blocks.into_iter().find(|block| block.is_active);
+                        // ccusage is working! Return the active block (if any) and true
+                        let active_block = response.blocks.into_iter().find(|block| block.is_active);
+                        return (active_block, true);
                     }
                     Err(e) => {
                         eprintln!("Failed to parse ccusage response: {}", e);
@@ -131,7 +135,7 @@ async fn fetch_session_data() -> Option<BlockData> {
     }
 
     eprintln!("All attempts to fetch session data failed");
-    None
+    (None, false)
 }
 
 // Removed fetch_blocks_data and fetch_week_data functions as they are no longer needed
@@ -220,7 +224,7 @@ async fn refresh_session_data(app_handle: &tauri::AppHandle) {
     IS_REFRESHING.store(true, Ordering::Relaxed);
     
     // Fetch active session data
-    let active_block = fetch_session_data().await;
+    let (active_block, ccusage_available) = fetch_session_data().await;
     
     // Update tray title with cost if there's an active session
     let title = if let Some(ref block) = active_block {
@@ -234,6 +238,7 @@ async fn refresh_session_data(app_handle: &tauri::AppHandle) {
         let mut cache = SESSION_CACHE.lock().unwrap();
         cache.active_block = active_block;
         cache.last_updated = Some(Instant::now());
+        cache.ccusage_available = ccusage_available;
     }
     
     // Update tray title
@@ -261,9 +266,9 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
     menu_builder = menu_builder.item(&ccusage_header).separator();
 
     // Get data from cache
-    let (active_block, has_attempted_fetch) = {
+    let (active_block, has_attempted_fetch, ccusage_available) = {
         let cache = SESSION_CACHE.lock().unwrap();
-        (cache.active_block.clone(), cache.last_updated.is_some())
+        (cache.active_block.clone(), cache.last_updated.is_some(), cache.ccusage_available)
     };
 
     // Current session section
@@ -323,20 +328,25 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         
         menu_builder = menu_builder.separator();
     } else if has_attempted_fetch {
-        // We've tried to fetch but got no data - likely ccusage is not available
+        // We've tried to fetch
         let no_session = MenuItemBuilder::with_id("no_session", "No active session")
             .build(app)?;
         menu_builder = menu_builder.item(&no_session);
         
-        // Add helpful error message
-        let error_msg = MenuItemBuilder::with_id("error_msg", "ccusage may not be installed")
-            .enabled(false)
-            .build(app)?;
-        menu_builder = menu_builder.item(&error_msg);
+        // Only show error if ccusage is actually not available
+        if !ccusage_available {
+            // Add helpful error message
+            let error_msg = MenuItemBuilder::with_id("error_msg", "ccusage may not be installed")
+                .enabled(false)
+                .build(app)?;
+            menu_builder = menu_builder.item(&error_msg);
+            
+            let install_msg = MenuItemBuilder::with_id("install_msg", "Install: npm install -g ccusage")
+                .build(app)?;
+            menu_builder = menu_builder.item(&install_msg);
+        }
         
-        let install_msg = MenuItemBuilder::with_id("install_msg", "Install: npm install -g ccusage")
-            .build(app)?;
-        menu_builder = menu_builder.item(&install_msg).separator();
+        menu_builder = menu_builder.separator();
     } else {
         // Still loading
         let loading = MenuItemBuilder::with_id("loading", "Loading...")
