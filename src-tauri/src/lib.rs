@@ -241,6 +241,13 @@ async fn refresh_session_data(app_handle: &tauri::AppHandle) {
         let _ = tray.set_title(Some(title));
     }
     
+    // Rebuild and update the menu to reflect new data
+    if let Ok(new_menu) = build_menu(app_handle).await {
+        if let Some(tray) = app_handle.try_state::<Arc<tauri::tray::TrayIcon>>() {
+            let _ = tray.set_menu(Some(new_menu));
+        }
+    }
+    
     // Clear refresh flag
     IS_REFRESHING.store(false, Ordering::Relaxed);
 }
