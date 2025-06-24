@@ -10,61 +10,47 @@ use std::time::Instant;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ModelBreakdown {
-    #[serde(rename = "modelName")]
-    model_name: String,
+struct BlockData {
+    id: String,
+    #[serde(rename = "startTime")]
+    start_time: String,
+    #[serde(rename = "endTime")]
+    end_time: String,
+    #[serde(rename = "isActive")]
+    is_active: bool,
+    #[serde(rename = "tokenCounts")]
+    token_counts: TokenCounts,
+    #[serde(rename = "costUSD")]
+    cost_usd: f64,
+    models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TokenCounts {
     #[serde(rename = "inputTokens")]
     input_tokens: u64,
     #[serde(rename = "outputTokens")]
     output_tokens: u64,
-    #[serde(rename = "cacheCreationTokens")]
-    cache_creation_tokens: u64,
-    #[serde(rename = "cacheReadTokens")]
-    cache_read_tokens: u64,
-    cost: f64,
+    #[serde(rename = "cacheCreationInputTokens")]
+    cache_creation_input_tokens: u64,
+    #[serde(rename = "cacheReadInputTokens")]
+    cache_read_input_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct DailyUsage {
-    date: String,
-    #[serde(rename = "inputTokens")]
-    input_tokens: u64,
-    #[serde(rename = "outputTokens")]
-    output_tokens: u64,
-    #[serde(rename = "cacheCreationTokens")]
-    cache_creation_tokens: u64,
-    #[serde(rename = "cacheReadTokens")]
-    cache_read_tokens: u64,
-    #[serde(rename = "totalTokens")]
-    total_tokens: u64,
-    #[serde(rename = "totalCost")]
-    total_cost: f64,
-    #[serde(rename = "modelsUsed")]
-    models_used: Vec<String>,
-    #[serde(rename = "modelBreakdowns")]
-    model_breakdowns: Vec<ModelBreakdown>,
+struct BlocksResponse {
+    blocks: Vec<BlockData>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CcusageResponse {
-    daily: Vec<DailyUsage>,
-    totals: serde_json::Value,
-}
 
 #[derive(Debug, Clone)]
 struct SessionData {
-    breakdowns: Option<Vec<ModelBreakdown>>,
-    total_cost: f64,
-    session_start: Option<String>,
-    session_end: Option<String>,
+    active_block: Option<BlockData>,
     last_updated: Option<Instant>,
 }
 
 static SESSION_CACHE: Mutex<SessionData> = Mutex::new(SessionData {
-    breakdowns: None,
-    total_cost: 0.0,
-    session_start: None,
-    session_end: None,
+    active_block: None,
     last_updated: None,
 });
 
@@ -94,14 +80,13 @@ fn format_model_name(model_name: &str) -> String {
     }
 }
 
-async fn fetch_session_data() -> Option<(Vec<ModelBreakdown>, String, String)> {
+async fn fetch_session_data() -> Option<BlockData> {
     let output = Command::new("npx")
         .args(&[
             "ccusage@latest", 
             "blocks", 
             "--json", 
-            "--breakdown", 
-            "--active"  // Only show the current active block
+            "--active"
         ])
         .output()
         .await
@@ -112,83 +97,9 @@ async fn fetch_session_data() -> Option<(Vec<ModelBreakdown>, String, String)> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let data: serde_json::Value = serde_json::from_str(&stdout).ok()?;
+    let response: BlocksResponse = serde_json::from_str(&stdout).ok()?;
     
-    // Aggregate all blocks in the 5-hour session
-    if let Some(blocks) = data["blocks"].as_array() {
-        if blocks.is_empty() {
-            return None;
-        }
-        
-        // Get session start and end times from first and last blocks
-        let first_block = &blocks[0];
-        let last_block = &blocks[blocks.len() - 1];
-        
-        let session_start = first_block["startTime"].as_str()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-            
-        let session_end = last_block["endTime"].as_str()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-        
-        let mut aggregated: std::collections::HashMap<String, ModelBreakdown> = std::collections::HashMap::new();
-        
-        for block in blocks {
-            // First try modelBreakdowns
-            if let Some(breakdowns) = block["modelBreakdowns"].as_array() {
-                for breakdown in breakdowns {
-                    let model_name = breakdown["modelName"].as_str().unwrap_or_default().to_string();
-                    let entry = aggregated.entry(model_name.clone()).or_insert(ModelBreakdown {
-                        model_name,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cache_creation_tokens: 0,
-                        cache_read_tokens: 0,
-                        cost: 0.0,
-                    });
-                    entry.input_tokens += breakdown["inputTokens"].as_u64().unwrap_or(0);
-                    entry.output_tokens += breakdown["outputTokens"].as_u64().unwrap_or(0);
-                    entry.cache_creation_tokens += breakdown["cacheCreationTokens"].as_u64().unwrap_or(0);
-                    entry.cache_read_tokens += breakdown["cacheReadTokens"].as_u64().unwrap_or(0);
-                    entry.cost += breakdown["cost"].as_f64().unwrap_or(0.0);
-                }
-            } else if let Some(models) = block["models"].as_array() {
-                // Fallback: distribute cost and tokens evenly among models
-                let cost_usd = block["costUSD"].as_f64().unwrap_or(0.0);
-                let cost_per_model = cost_usd / models.len() as f64;
-                
-                let token_counts = &block["tokenCounts"];
-                let input_tokens = token_counts["inputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
-                let output_tokens = token_counts["outputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
-                let cache_creation = token_counts["cacheCreationInputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
-                let cache_read = token_counts["cacheReadInputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
-                
-                for model in models {
-                    let model_name = model.as_str().unwrap_or_default().to_string();
-                    let entry = aggregated.entry(model_name.clone()).or_insert(ModelBreakdown {
-                        model_name,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cache_creation_tokens: 0,
-                        cache_read_tokens: 0,
-                        cost: 0.0,
-                    });
-                    entry.input_tokens += input_tokens;
-                    entry.output_tokens += output_tokens;
-                    entry.cache_creation_tokens += cache_creation;
-                    entry.cache_read_tokens += cache_read;
-                    entry.cost += cost_per_model;
-                }
-            }
-        }
-        
-        Some((aggregated.into_values().collect(), session_start, session_end))
-    } else {
-        None
-    }
+    response.blocks.into_iter().find(|block| block.is_active)
 }
 
 // Removed fetch_blocks_data and fetch_week_data functions as they are no longer needed
@@ -197,34 +108,25 @@ async fn refresh_session_data(app_handle: &tauri::AppHandle) {
     // Set refresh flag
     IS_REFRESHING.store(true, Ordering::Relaxed);
     
-    // Fetch 5-hour session data
-    let session_data = fetch_session_data().await;
+    // Fetch active session data
+    let active_block = fetch_session_data().await;
     
-    // Calculate total cost and extract session times
-    let (total_cost, session_start, session_end) = if let Some((ref breakdowns, ref start, ref end)) = session_data {
-        let cost: f64 = breakdowns.iter().map(|b| b.cost).sum();
-        (cost, Some(start.clone()), Some(end.clone()))
+    // Update tray title with cost if there's an active session
+    let title = if let Some(ref block) = active_block {
+        format!("${:.2}", block.cost_usd)
     } else {
-        (0.0, None, None)
+        String::new()
     };
-
+    
     // Update cache
     {
         let mut cache = SESSION_CACHE.lock().unwrap();
-        cache.breakdowns = session_data.map(|(breakdowns, _, _)| breakdowns);
-        cache.total_cost = total_cost;
-        cache.session_start = session_start;
-        cache.session_end = session_end;
+        cache.active_block = active_block;
         cache.last_updated = Some(Instant::now());
     }
     
-    // Always update tray title with cost
+    // Update tray title
     if let Some(tray) = app_handle.tray_by_id("main") {
-        let title = if total_cost > 0.0 {
-            format!("${:.2}", total_cost)
-        } else {
-            String::new()
-        };
         let _ = tray.set_title(Some(title));
     }
     
@@ -241,9 +143,9 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
     menu_builder = menu_builder.item(&ccusage_header).separator();
 
     // Get data from cache
-    let (session_data, session_start, session_end) = {
+    let active_block = {
         let cache = SESSION_CACHE.lock().unwrap();
-        (cache.breakdowns.clone(), cache.session_start.clone(), cache.session_end.clone())
+        cache.active_block.clone()
     };
 
     // Current Session section
@@ -252,37 +154,62 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         .build(app)?;
     menu_builder = menu_builder.item(&session_title);
 
-    if let Some(breakdowns) = session_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens as f64 / 1000.0;
-            let output_k = breakdown.output_tokens as f64 / 1000.0;
-            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
-                model_name, breakdown.cost, input_k, output_k);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("today_{}", breakdown.model_name),
-                &cost_str,
-            )
+    if let Some(block) = active_block {
+        // Cost and token counts
+        let input_k = block.token_counts.input_tokens as f64 / 1000.0;
+        let output_k = block.token_counts.output_tokens as f64 / 1000.0;
+        let cost_str = format!("Cost: ${:.2}", block.cost_usd);
+        let tokens_str = format!("Tokens: In {:.1}K / Out {:.1}K", input_k, output_k);
+        
+        let cost_item = MenuItemBuilder::with_id("session_cost", &cost_str)
             .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
+        let tokens_item = MenuItemBuilder::with_id("session_tokens", &tokens_str)
+            .build(app)?;
+        menu_builder = menu_builder.item(&cost_item).item(&tokens_item);
+        
+        // Models used
+        if !block.models.is_empty() {
+            menu_builder = menu_builder.separator();
+            let models_header = MenuItemBuilder::with_id("models_header", "Models used")
+                .enabled(false)
+                .build(app)?;
+            menu_builder = menu_builder.item(&models_header);
+            
+            for model in &block.models {
+                let model_name = format_model_name(model);
+                let model_item = MenuItemBuilder::with_id(
+                    &format!("model_{}", model),
+                    &model_name,
+                )
+                .build(app)?;
+                menu_builder = menu_builder.item(&model_item);
+            }
         }
-    } else {
-        let no_data = MenuItemBuilder::with_id("today_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // Session times
-    if let (Some(start), Some(end)) = (session_start, session_end) {
-        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start))
+        
+        menu_builder = menu_builder.separator();
+        
+        // Session times
+        let start_time = chrono::DateTime::parse_from_rfc3339(&block.start_time)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+            
+        let end_time = chrono::DateTime::parse_from_rfc3339(&block.end_time)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+            
+        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start_time))
             .enabled(false)
             .build(app)?;
-        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Expires: {}", end))
+        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Expires: {}", end_time))
             .enabled(false)
             .build(app)?;
         menu_builder = menu_builder.item(&session_start_item).item(&session_end_item).separator();
+    } else {
+        let no_session = MenuItemBuilder::with_id("no_session", "No active session")
+            .build(app)?;
+        menu_builder = menu_builder.item(&no_session).separator();
     }
 
     // Launch on startup
@@ -374,11 +301,8 @@ pub fn run() {
                         // Get initial title from cache
                         let initial_title = {
                             let cache = SESSION_CACHE.lock().unwrap();
-                            if cache.total_cost > 0.0 {
-                                Some(format!("${:.2}", cache.total_cost))
-                            } else {
-                                None
-                            }
+                            cache.active_block.as_ref()
+                                .map(|block| format!("${:.2}", block.cost_usd))
                         };
                         
                         let tray = TrayIconBuilder::with_id("main")

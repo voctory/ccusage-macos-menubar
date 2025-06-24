@@ -45,9 +45,11 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
 
 2. **Current Session Display**
    - **Current Session** shows the active 5-hour billing block
-   - **Model breakdown** with costs and token counts (In/Out)
+   - **Cost** and **Token counts** (Input/Output) on separate lines
+   - **Models used** header with each model listed separately
    - **Session times** showing "Started" and "Expires" times
-   - **Total cost** displayed in the menubar (e.g., $9.51)
+   - **Total cost** displayed in the menubar (e.g., $9.51) when active session exists
+   - **"No active session"** displayed when no active block
    - **Refresh** (manually update all data)
    - **Launch on startup** (checkbox, toggles autostart)
    - **Quit** (with Cmd+Q shortcut)
@@ -63,12 +65,13 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Works across macOS, Windows, Linux
 
 5. **Data Integration**
-   - **Current Session**: `npx ccusage@latest blocks --json --breakdown --active`
+   - **Current Session**: `npx ccusage@latest blocks --json --active`
    - Shows only the active 5-hour billing block
    - Caches data to handle network issues
    - Auto-formats model names (claude-opus-4-20250514 → "Opus 4")
    - Shows costs formatted as currency ($9.51)
    - Displays accurate session start and expiration times
+   - Handles no active session gracefully
 
 6. **Smart Refresh & Performance**
    - **Concurrent data fetching** - all time periods updated simultaneously using `tokio::join!`
@@ -115,13 +118,16 @@ To verify the menubar behavior:
 
 ### Menu Examples
 
-**Normal state** (with ccusage data):
+**Normal state** (with active session):
 ```
 CCUsage
 ────────────────
 Current Session
-Opus 4: $9.51 (In: 21.8K, Out: 29.6K)
-Sonnet 4: $1.49 (In: 5.7K, Out: 4.9K)
+Cost: $17.59
+Tokens: In 6.5K / Out 5.5K
+────────────────
+Models used
+Opus 4
 ────────────────
 Started: 10:00 PM
 Expires: 3:00 AM
@@ -132,10 +138,24 @@ Refresh
 Quit
 ```
 
+**No active session state**:
+```
+CCUsage
+────────────────
+Current Session
+No active session
+────────────────
+☑ Launch on startup
+Refresh
+────────────────
+Quit
+```
+
 **Benefits of Current Approach**:
 - **Accurate session times** - shows actual 5-hour billing block start/end
-- **Clear cost display** - total cost always visible in menubar
+- **Clear cost display** - total cost visible in menubar when session is active
 - **No confusion** - displays only the active session, not multiple blocks
+- **Graceful handling** - shows "No active session" when appropriate
 - **Smooth user experience** - no lag or jitter
 
 ## Notes
