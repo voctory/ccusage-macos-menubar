@@ -43,9 +43,9 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Left-click shows menu with usage stats and options
    - No window interface - pure menubar app
 
-2. **Dynamic Menu Content**
-   - **CC Usage - Today** (title, disabled)
-   - **Real-time model costs** (e.g., "Opus 4: $9.51", "Sonnet 4: $1.49")
+2. **Dynamic Menu Content with Time Periods**
+   - **CCUsage - [Period]** (submenu with Today/5 Hrs/1 Hr/Week options)
+   - **Real-time model costs** (e.g., "Opus 4: $9.51", "Sonnet 4: $1.49") - now readable, not grayed out
    - **Refresh** (manually update usage data)
    - **Launch on startup** (checkbox, toggles autostart)
    - **Quit** (with Cmd+Q shortcut)
@@ -61,10 +61,13 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Works across macOS, Windows, Linux
 
 5. **Data Integration**
-   - Fetches usage data via `npx ccusage@latest daily --json --breakdown`
+   - **Today**: `npx ccusage@latest daily --json --breakdown`
+   - **5 Hrs/1 Hr**: `npx ccusage@latest blocks --json --breakdown --recent --session-length [1|5]`
+   - **Week**: `npx ccusage@latest daily --json --breakdown --since [7-days-ago]`
    - Caches data to handle network issues
    - Auto-formats model names (claude-opus-4-20250514 → "Opus 4")
    - Shows costs formatted as currency ($9.51)
+   - Aggregates weekly data across all days
 
 6. **macOS Specific**
    - Uses `ActivationPolicy::Accessory` to hide from dock
@@ -106,10 +109,14 @@ To verify the menubar behavior:
 
 **Normal state** (with ccusage data):
 ```
-CC Usage - Today
+▶ CCUsage - Today
+  ├ Today
+  ├ 5 Hrs  
+  ├ 1 Hr
+  └ Week
 ────────────────
-Opus 4: $9.51
-Sonnet 4: $1.49
+Opus 4: $9.51       ← (readable, not grayed out)
+Sonnet 4: $1.49     ← (readable, not grayed out)
 ────────────────
 Refresh
 ────────────────
@@ -120,7 +127,11 @@ Quit
 
 **Error state** (no ccusage):
 ```
-CC Usage - Today
+▶ CCUsage - Today
+  ├ Today
+  ├ 5 Hrs
+  ├ 1 Hr
+  └ Week
 ────────────────
 Install ccusage CLI
 ────────────────
@@ -130,6 +141,12 @@ Refresh
 ────────────────
 Quit
 ```
+
+**Different time periods**:
+- **Today**: Shows today's usage by model
+- **5 Hrs**: Shows usage from current 5-hour billing block  
+- **1 Hr**: Shows usage from current 1-hour billing block
+- **Week**: Shows aggregated usage from last 7 days
 
 ## Notes
 
