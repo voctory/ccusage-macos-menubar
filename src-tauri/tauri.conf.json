@@ -27,9 +27,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "../ccusage-wrapper.js",
-      "../node_modules/ccusage/**/*"
-    ]
   }
 }

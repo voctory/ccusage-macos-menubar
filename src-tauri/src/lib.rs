@@ -82,20 +82,18 @@ fn format_model_name(model_name: &str) -> String {
 async fn fetch_session_data() -> Option<BlockData> {
     // Try multiple approaches to find and run ccusage
     let shell_commands = vec![
-        // First, try using the bundled ccusage via node_modules (works in both dev and prod)
-        ("sh", vec!["-c", "cd \"$(dirname \"$0\")\" && node node_modules/ccusage/dist/index.js blocks --json --active"]),
-        // Try from app Resources directory (macOS production build)
-        ("sh", vec!["-c", "cd \"$(dirname \"$0\")/../Resources\" && node ccusage-wrapper.js blocks --json --active"]),
-        // Try using npm script (development)
-        ("npm", vec!["run", "ccusage", "--", "blocks", "--json", "--active"]),
-        // Try direct node with ccusage from node_modules
+        // Try direct node with ccusage from node_modules (development)
         ("node", vec!["node_modules/ccusage/dist/index.js", "blocks", "--json", "--active"]),
-        // Fallback to npx with locally installed ccusage
+        // Try npx with locally installed ccusage (development)
         ("npx", vec!["ccusage", "blocks", "--json", "--active"]),
-        // Last resort: use npx with latest
+        // Use npx with latest version (production - works anywhere with internet)
         ("sh", vec!["-c", "npx ccusage@latest blocks --json --active"]),
         // Try with explicit PATH that includes common npm locations
         ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH npx ccusage@latest blocks --json --active"]),
+        // Try global ccusage if installed
+        ("sh", vec!["-c", "ccusage blocks --json --active"]),
+        // Try with explicit PATH for global ccusage
+        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH ccusage blocks --json --active"]),
     ];
 
     for (cmd, args) in shell_commands {
