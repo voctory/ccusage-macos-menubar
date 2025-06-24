@@ -43,10 +43,13 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Left-click shows menu with usage stats and options
    - No window interface - pure menubar app
 
-2. **Dynamic Menu Content with Time Periods**
-   - **CCUsage - [Period]** (submenu with Today/5 Hrs/1 Hr/Week options)
-   - **Real-time model costs** (e.g., "Opus 4: $9.51", "Sonnet 4: $1.49") - now readable, not grayed out
-   - **Refresh** (manually update usage data)
+2. **All Time Periods in One Menu**
+   - **Today** section with model costs
+   - **5 Hr** section with current billing block costs
+   - **1 Hr** section with current hourly block costs  
+   - **Week** section with 7-day aggregated costs
+   - **Dividers** between each time period for clarity
+   - **Refresh** (manually update all data)
    - **Launch on startup** (checkbox, toggles autostart)
    - **Quit** (with Cmd+Q shortcut)
 
@@ -69,13 +72,12 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Shows costs formatted as currency ($9.51)
    - Aggregates weekly data across all days
 
-6. **Persistence & Smart Refresh**
-   - **Time period selection persists** across app restarts
-   - Settings saved to `~/Library/Application Support/ccusage-macos-menubar/settings.json`
-   - **Smart refresh logic** - only fetches new data if cache is older than 5 minutes
-   - **Automatic refresh on time period change** - always fetches fresh data when switching periods
-   - **No menu interruption** - refreshing doesn't close the menu
-   - Manual refresh button forces immediate update
+6. **Smart Refresh & Performance**
+   - **Concurrent data fetching** - all time periods updated simultaneously using `tokio::join!`
+   - **Smart caching** - only fetches new data if cache is older than 5 minutes
+   - **No menu interruption** - menu stays open during refresh
+   - **Manual refresh** forces immediate update of all time periods
+   - **Fast startup** with cached data
 
 7. **macOS Specific**
    - Uses `ActivationPolicy::Accessory` to hide from dock
@@ -117,31 +119,21 @@ To verify the menubar behavior:
 
 **Normal state** (with ccusage data):
 ```
-▶ CCUsage - Today
-  ├ Today
-  ├ 5 Hrs  
-  ├ 1 Hr
-  └ Week
+Today
+Opus 4: $9.51
+Sonnet 4: $1.49
 ────────────────
-Opus 4: $9.51       ← (readable, not grayed out)
-Sonnet 4: $1.49     ← (readable, not grayed out)
+5 Hr
+Opus 4: $2.30
+Sonnet 4: $0.45
 ────────────────
-Refresh
+1 Hr
+Opus 4: $0.15
+Sonnet 4: $0.08
 ────────────────
-☑ Launch on startup
-────────────────
-Quit
-```
-
-**Error state** (no ccusage):
-```
-▶ CCUsage - Today
-  ├ Today
-  ├ 5 Hrs
-  ├ 1 Hr
-  └ Week
-────────────────
-Install ccusage CLI
+Week
+Opus 4: $45.30
+Sonnet 4: $12.85
 ────────────────
 Refresh
 ────────────────
@@ -150,11 +142,11 @@ Refresh
 Quit
 ```
 
-**Different time periods**:
-- **Today**: Shows today's usage by model
-- **5 Hrs**: Shows usage from current 5-hour billing block  
-- **1 Hr**: Shows usage from current 1-hour billing block
-- **Week**: Shows aggregated usage from last 7 days
+**Benefits of New Approach**:
+- **All data visible** at once - no need to switch between periods
+- **No menu closing** issues - menu stays stable
+- **Fast comparison** between time periods
+- **Smooth user experience** - no lag or jitter
 
 ## Notes
 

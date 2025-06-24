@@ -1,5 +1,5 @@
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, CheckMenuItemBuilder, SubmenuBuilder},
+    menu::{MenuBuilder, MenuItemBuilder, CheckMenuItemBuilder},
     tray::{TrayIconBuilder},
     Manager,
 };
@@ -72,234 +72,320 @@ struct CcusageBlocksResponse {
     blocks: Vec<BlockUsage>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum TimePeriod {
-    Today,
-    FiveHours,
-    OneHour,
-    Week,
-}
-
-impl TimePeriod {
-    fn display_name(&self) -> &'static str {
-        match self {
-            TimePeriod::Today => "Today",
-            TimePeriod::FiveHours => "5 Hrs",
-            TimePeriod::OneHour => "1 Hr",
-            TimePeriod::Week => "Week",
-        }
-    }
-
-}
-
 #[derive(Debug, Clone)]
-struct UsageCache {
-    daily_data: Option<CcusageResponse>,
-    blocks_data: Option<CcusageBlocksResponse>,
-    current_period: TimePeriod,
+struct AllPeriodsData {
+    today_data: Option<Vec<ModelBreakdown>>,
+    five_hr_data: Option<Vec<ModelBreakdown>>,
+    one_hr_data: Option<Vec<ModelBreakdown>>,
+    week_data: Option<Vec<ModelBreakdown>>,
     last_updated: Option<Instant>,
-    last_error: Option<String>,
 }
 
-static USAGE_CACHE: Mutex<UsageCache> = Mutex::new(UsageCache {
-    daily_data: None,
-    blocks_data: None,
-    current_period: TimePeriod::Today,
+static ALL_DATA_CACHE: Mutex<AllPeriodsData> = Mutex::new(AllPeriodsData {
+    today_data: None,
+    five_hr_data: None,
+    one_hr_data: None,
+    week_data: None,
     last_updated: None,
-    last_error: None,
 });
 
-
-fn get_settings_file_path() -> Result<std::path::PathBuf, String> {
-    let config_dir = dirs::config_dir()
-        .ok_or("Could not find config directory")?;
-    let app_dir = config_dir.join("ccusage-macos-menubar");
-    std::fs::create_dir_all(&app_dir)
-        .map_err(|e| format!("Could not create config directory: {}", e))?;
-    Ok(app_dir.join("settings.json"))
-}
-
-#[derive(Serialize, Deserialize)]
-struct AppSettings {
-    current_period: String,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            current_period: "today".to_string(),
-        }
-    }
-}
-
-fn load_settings() -> AppSettings {
-    match get_settings_file_path() {
-        Ok(path) => {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                serde_json::from_str(&content).unwrap_or_default()
+fn format_model_name(model_name: &str) -> String {
+    match model_name {
+        "claude-opus-4-20250514" => "Opus 4".to_string(),
+        "claude-sonnet-4-20250514" => "Sonnet 4".to_string(),
+        "claude-3-5-sonnet-20241022" => "Sonnet 3.5".to_string(),
+        "claude-3-haiku-20240307" => "Haiku".to_string(),
+        _ => {
+            if model_name.contains("opus") {
+                "Opus".to_string()
+            } else if model_name.contains("sonnet") {
+                "Sonnet".to_string()
+            } else if model_name.contains("haiku") {
+                "Haiku".to_string()
             } else {
-                AppSettings::default()
+                model_name.to_string()
             }
         }
-        Err(_) => AppSettings::default(),
     }
 }
 
-fn save_settings(settings: &AppSettings) {
-    if let Ok(path) = get_settings_file_path() {
-        if let Ok(content) = serde_json::to_string_pretty(settings) {
-            let _ = std::fs::write(&path, content);
+async fn fetch_today_data() -> Option<Vec<ModelBreakdown>> {
+    let output = Command::new("npx")
+        .args(&["ccusage@latest", "daily", "--json", "--breakdown"])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: CcusageResponse = serde_json::from_str(&stdout).ok()?;
+    
+    response.daily.first().map(|day| day.model_breakdowns.clone())
+}
+
+async fn fetch_blocks_data(session_length: &str) -> Option<Vec<ModelBreakdown>> {
+    let output = Command::new("npx")
+        .args(&[
+            "ccusage@latest", 
+            "blocks", 
+            "--json", 
+            "--breakdown", 
+            "--recent",
+            "--session-length",
+            session_length
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: CcusageBlocksResponse = serde_json::from_str(&stdout).ok()?;
+    
+    if let Some(latest_block) = response.blocks.first() {
+        if !latest_block.model_breakdowns.is_empty() {
+            Some(latest_block.model_breakdowns.clone())
+        } else {
+            // Estimate breakdown based on models present
+            let cost_per_model = latest_block.cost_usd / latest_block.models.len() as f64;
+            Some(latest_block.models.iter().map(|model| ModelBreakdown {
+                model_name: model.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                cost: cost_per_model,
+            }).collect())
+        }
+    } else {
+        None
+    }
+}
+
+async fn fetch_week_data() -> Option<Vec<ModelBreakdown>> {
+    let now = chrono::Utc::now();
+    let week_ago = now - chrono::Duration::days(7);
+    let since_date = week_ago.format("%Y%m%d").to_string();
+
+    let output = Command::new("npx")
+        .args(&[
+            "ccusage@latest", 
+            "daily", 
+            "--json", 
+            "--breakdown",
+            "--since",
+            &since_date
+        ])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: CcusageResponse = serde_json::from_str(&stdout).ok()?;
+    
+    // Aggregate all daily data for the week
+    let mut aggregated: std::collections::HashMap<String, ModelBreakdown> = std::collections::HashMap::new();
+    
+    for day in &response.daily {
+        for breakdown in &day.model_breakdowns {
+            let entry = aggregated.entry(breakdown.model_name.clone()).or_insert(ModelBreakdown {
+                model_name: breakdown.model_name.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+                cost: 0.0,
+            });
+            entry.input_tokens += breakdown.input_tokens;
+            entry.output_tokens += breakdown.output_tokens;
+            entry.cache_creation_tokens += breakdown.cache_creation_tokens;
+            entry.cache_read_tokens += breakdown.cache_read_tokens;
+            entry.cost += breakdown.cost;
         }
     }
+    
+    Some(aggregated.into_values().collect())
 }
 
+async fn refresh_all_data() {
+    // Fetch all data concurrently
+    let (today, five_hr, one_hr, week) = tokio::join!(
+        fetch_today_data(),
+        fetch_blocks_data("5"),
+        fetch_blocks_data("1"),
+        fetch_week_data()
+    );
 
-#[tauri::command]
-async fn fetch_usage_data(period: String) -> Result<String, String> {
-    let period_enum = match period.as_str() {
-        "today" => TimePeriod::Today,
-        "5hrs" => TimePeriod::FiveHours,
-        "1hr" => TimePeriod::OneHour,
-        "week" => TimePeriod::Week,
-        _ => TimePeriod::Today,
+    // Update cache
+    {
+        let mut cache = ALL_DATA_CACHE.lock().unwrap();
+        cache.today_data = today;
+        cache.five_hr_data = five_hr;
+        cache.one_hr_data = one_hr;
+        cache.week_data = week;
+        cache.last_updated = Some(Instant::now());
+    }
+}
+
+async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
+    // Check if we need to refresh (no data or data is older than 5 minutes)
+    let should_refresh = {
+        let cache = ALL_DATA_CACHE.lock().unwrap();
+        match cache.last_updated {
+            Some(last_update) => last_update.elapsed().as_secs() > 300, // 5 minutes
+            None => true, // No data yet
+        }
     };
 
-    match period_enum {
-        TimePeriod::Today => {
-            let output = Command::new("npx")
-                .args(&["ccusage@latest", "daily", "--json", "--breakdown"])
-                .output()
-                .await
-                .map_err(|e| format!("Failed to run ccusage: {}", e))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("ccusage command failed: {}", stderr));
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let response: CcusageResponse = serde_json::from_str(&stdout)
-                .map_err(|e| format!("Failed to parse ccusage output: {}", e))?;
-
-            // Update cache
-            {
-                let mut cache = USAGE_CACHE.lock().unwrap();
-                cache.daily_data = Some(response.clone());
-                cache.current_period = period_enum;
-                cache.last_updated = Some(Instant::now());
-                cache.last_error = None;
-            }
-
-            Ok(serde_json::to_string(&response).unwrap())
-        }
-        TimePeriod::FiveHours | TimePeriod::OneHour => {
-            let session_length = match period_enum {
-                TimePeriod::FiveHours => "5",
-                TimePeriod::OneHour => "1",
-                _ => "5",
-            };
-
-            let output = Command::new("npx")
-                .args(&[
-                    "ccusage@latest", 
-                    "blocks", 
-                    "--json", 
-                    "--breakdown", 
-                    "--recent",
-                    "--session-length",
-                    session_length
-                ])
-                .output()
-                .await
-                .map_err(|e| format!("Failed to run ccusage: {}", e))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("ccusage command failed: {}", stderr));
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let response: CcusageBlocksResponse = serde_json::from_str(&stdout)
-                .map_err(|e| format!("Failed to parse ccusage output: {}", e))?;
-
-            // Update cache
-            {
-                let mut cache = USAGE_CACHE.lock().unwrap();
-                cache.blocks_data = Some(response.clone());
-                cache.current_period = period_enum;
-                cache.last_updated = Some(Instant::now());
-                cache.last_error = None;
-            }
-
-            Ok(serde_json::to_string(&response).unwrap())
-        }
-        TimePeriod::Week => {
-            // Calculate date 7 days ago
-            let now = chrono::Utc::now();
-            let week_ago = now - chrono::Duration::days(7);
-            let since_date = week_ago.format("%Y%m%d").to_string();
-
-            let output = Command::new("npx")
-                .args(&[
-                    "ccusage@latest", 
-                    "daily", 
-                    "--json", 
-                    "--breakdown",
-                    "--since",
-                    &since_date
-                ])
-                .output()
-                .await
-                .map_err(|e| format!("Failed to run ccusage: {}", e))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("ccusage command failed: {}", stderr));
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let response: CcusageResponse = serde_json::from_str(&stdout)
-                .map_err(|e| format!("Failed to parse ccusage output: {}", e))?;
-
-            // Update cache
-            {
-                let mut cache = USAGE_CACHE.lock().unwrap();
-                cache.daily_data = Some(response.clone());
-                cache.current_period = period_enum;
-                cache.last_updated = Some(Instant::now());
-                cache.last_error = None;
-            }
-
-            Ok(serde_json::to_string(&response).unwrap())
-        }
+    if should_refresh {
+        refresh_all_data().await;
     }
-}
 
-#[tauri::command]
-async fn get_cached_usage_data() -> Result<Option<String>, String> {
-    let cache = USAGE_CACHE.lock().unwrap();
-    match cache.current_period {
-        TimePeriod::Today | TimePeriod::Week => {
-            if let Some(ref data) = cache.daily_data {
-                Ok(Some(serde_json::to_string(data).unwrap()))
-            } else {
-                Ok(None)
-            }
+    let mut menu_builder = MenuBuilder::new(app);
+
+    // Get data from cache
+    let cache_data = {
+        let cache = ALL_DATA_CACHE.lock().unwrap();
+        (
+            cache.today_data.clone(),
+            cache.five_hr_data.clone(),
+            cache.one_hr_data.clone(),
+            cache.week_data.clone(),
+        )
+    };
+
+    let (today_data, five_hr_data, one_hr_data, week_data) = cache_data;
+
+    // Today section
+    let today_title = MenuItemBuilder::with_id("today_title", "Today")
+        .enabled(false)
+        .build(app)?;
+    menu_builder = menu_builder.item(&today_title);
+
+    if let Some(breakdowns) = today_data {
+        for breakdown in &breakdowns {
+            let model_name = format_model_name(&breakdown.model_name);
+            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
+            let model_item = MenuItemBuilder::with_id(
+                &format!("today_{}", breakdown.model_name),
+                &cost_str,
+            )
+            .build(app)?;
+            menu_builder = menu_builder.item(&model_item);
         }
-        TimePeriod::FiveHours | TimePeriod::OneHour => {
-            if let Some(ref data) = cache.blocks_data {
-                Ok(Some(serde_json::to_string(data).unwrap()))
-            } else {
-                Ok(None)
-            }
-        }
+    } else {
+        let no_data = MenuItemBuilder::with_id("today_no_data", "No data available")
+            .build(app)?;
+        menu_builder = menu_builder.item(&no_data);
     }
-}
 
-#[tauri::command]
-async fn get_current_period() -> String {
-    let cache = USAGE_CACHE.lock().unwrap();
-    cache.current_period.display_name().to_string()
+    menu_builder = menu_builder.separator();
+
+    // 5 Hour section
+    let five_hr_title = MenuItemBuilder::with_id("5hr_title", "5 Hr")
+        .enabled(false)
+        .build(app)?;
+    menu_builder = menu_builder.item(&five_hr_title);
+
+    if let Some(breakdowns) = five_hr_data {
+        for breakdown in &breakdowns {
+            let model_name = format_model_name(&breakdown.model_name);
+            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
+            let model_item = MenuItemBuilder::with_id(
+                &format!("5hr_{}", breakdown.model_name),
+                &cost_str,
+            )
+            .build(app)?;
+            menu_builder = menu_builder.item(&model_item);
+        }
+    } else {
+        let no_data = MenuItemBuilder::with_id("5hr_no_data", "No data available")
+            .build(app)?;
+        menu_builder = menu_builder.item(&no_data);
+    }
+
+    menu_builder = menu_builder.separator();
+
+    // 1 Hour section
+    let one_hr_title = MenuItemBuilder::with_id("1hr_title", "1 Hr")
+        .enabled(false)
+        .build(app)?;
+    menu_builder = menu_builder.item(&one_hr_title);
+
+    if let Some(breakdowns) = one_hr_data {
+        for breakdown in &breakdowns {
+            let model_name = format_model_name(&breakdown.model_name);
+            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
+            let model_item = MenuItemBuilder::with_id(
+                &format!("1hr_{}", breakdown.model_name),
+                &cost_str,
+            )
+            .build(app)?;
+            menu_builder = menu_builder.item(&model_item);
+        }
+    } else {
+        let no_data = MenuItemBuilder::with_id("1hr_no_data", "No data available")
+            .build(app)?;
+        menu_builder = menu_builder.item(&no_data);
+    }
+
+    menu_builder = menu_builder.separator();
+
+    // Week section
+    let week_title = MenuItemBuilder::with_id("week_title", "Week")
+        .enabled(false)
+        .build(app)?;
+    menu_builder = menu_builder.item(&week_title);
+
+    if let Some(breakdowns) = week_data {
+        for breakdown in &breakdowns {
+            let model_name = format_model_name(&breakdown.model_name);
+            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
+            let model_item = MenuItemBuilder::with_id(
+                &format!("week_{}", breakdown.model_name),
+                &cost_str,
+            )
+            .build(app)?;
+            menu_builder = menu_builder.item(&model_item);
+        }
+    } else {
+        // Check if ccusage is available
+        let install_link = MenuItemBuilder::with_id("install_ccusage", "Install ccusage CLI")
+            .build(app)?;
+        menu_builder = menu_builder.item(&install_link);
+    }
+
+    menu_builder = menu_builder.separator();
+
+    // Refresh button
+    let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
+        .build(app)?;
+    menu_builder = menu_builder.item(&refresh).separator();
+
+    // Launch on startup
+    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    let launch_on_startup = CheckMenuItemBuilder::with_id("launch_on_startup", "Launch on startup")
+        .checked(autostart_enabled)
+        .build(app)?;
+    menu_builder = menu_builder.item(&launch_on_startup).separator();
+
+    // Quit
+    let quit = MenuItemBuilder::with_id("quit", "Quit")
+        .accelerator("Cmd+Q")
+        .build(app)?;
+    menu_builder = menu_builder.item(&quit);
+
+    Ok(menu_builder.build()?)
 }
 
 #[tauri::command]
@@ -324,205 +410,6 @@ async fn is_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
-fn format_model_name(model_name: &str) -> String {
-    match model_name {
-        "claude-opus-4-20250514" => "Opus 4".to_string(),
-        "claude-sonnet-4-20250514" => "Sonnet 4".to_string(),
-        "claude-3-5-sonnet-20241022" => "Sonnet 3.5".to_string(),
-        "claude-3-haiku-20240307" => "Haiku".to_string(),
-        _ => {
-            // Extract model name from full identifier
-            if model_name.contains("opus") {
-                "Opus".to_string()
-            } else if model_name.contains("sonnet") {
-                "Sonnet".to_string()
-            } else if model_name.contains("haiku") {
-                "Haiku".to_string()
-            } else {
-                model_name.to_string()
-            }
-        }
-    }
-}
-
-fn extract_model_breakdowns_from_data(data_str: &str, period: TimePeriod) -> Vec<ModelBreakdown> {
-    match period {
-        TimePeriod::Today | TimePeriod::Week => {
-            if let Ok(response) = serde_json::from_str::<CcusageResponse>(data_str) {
-                if period == TimePeriod::Week {
-                    // Aggregate all daily data for the week
-                    let mut aggregated: std::collections::HashMap<String, ModelBreakdown> = std::collections::HashMap::new();
-                    
-                    for day in &response.daily {
-                        for breakdown in &day.model_breakdowns {
-                            let entry = aggregated.entry(breakdown.model_name.clone()).or_insert(ModelBreakdown {
-                                model_name: breakdown.model_name.clone(),
-                                input_tokens: 0,
-                                output_tokens: 0,
-                                cache_creation_tokens: 0,
-                                cache_read_tokens: 0,
-                                cost: 0.0,
-                            });
-                            entry.input_tokens += breakdown.input_tokens;
-                            entry.output_tokens += breakdown.output_tokens;
-                            entry.cache_creation_tokens += breakdown.cache_creation_tokens;
-                            entry.cache_read_tokens += breakdown.cache_read_tokens;
-                            entry.cost += breakdown.cost;
-                        }
-                    }
-                    
-                    aggregated.into_values().collect()
-                } else if let Some(today) = response.daily.first() {
-                    today.model_breakdowns.clone()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
-        }
-        TimePeriod::FiveHours | TimePeriod::OneHour => {
-            if let Ok(response) = serde_json::from_str::<CcusageBlocksResponse>(data_str) {
-                if let Some(latest_block) = response.blocks.first() {
-                    // If block has breakdown, use it; otherwise estimate from models and total cost
-                    if !latest_block.model_breakdowns.is_empty() {
-                        latest_block.model_breakdowns.clone()
-                    } else {
-                        // Estimate breakdown based on models present
-                        let cost_per_model = latest_block.cost_usd / latest_block.models.len() as f64;
-                        latest_block.models.iter().map(|model| ModelBreakdown {
-                            model_name: model.clone(),
-                            input_tokens: 0,
-                            output_tokens: 0,
-                            cache_creation_tokens: 0,
-                            cache_read_tokens: 0,
-                            cost: cost_per_model,
-                        }).collect()
-                    }
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
-        }
-    }
-}
-
-async fn build_menu_with_usage_data(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
-    build_menu_with_usage_data_internal(app, false).await
-}
-
-async fn build_menu_with_usage_data_force_refresh(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
-    build_menu_with_usage_data_internal(app, true).await
-}
-
-async fn build_menu_with_usage_data_internal(app: &tauri::AppHandle, force_refresh: bool) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
-    // Get current period from cache
-    let current_period = {
-        let cache = USAGE_CACHE.lock().unwrap();
-        cache.current_period
-    };
-
-    // Check if we need to refresh (no data or data is older than 5 minutes)
-    let should_refresh = force_refresh || {
-        let cache = USAGE_CACHE.lock().unwrap();
-        match cache.last_updated {
-            Some(last_update) => last_update.elapsed().as_secs() > 300, // 5 minutes
-            None => true, // No data yet
-        }
-    };
-
-    // Only fetch fresh data if needed, otherwise use cache
-    let usage_data = if should_refresh {
-        let usage_result = fetch_usage_data(match current_period {
-            TimePeriod::Today => "today",
-            TimePeriod::FiveHours => "5hrs",
-            TimePeriod::OneHour => "1hr",
-            TimePeriod::Week => "week",
-        }.to_string()).await;
-        
-        match usage_result {
-            Ok(data) => Some(data),
-            Err(_) => {
-                // Fall back to cached data if fresh fetch fails
-                get_cached_usage_data().await.unwrap_or(None)
-            }
-        }
-    } else {
-        // Use cached data
-        get_cached_usage_data().await.unwrap_or(None)
-    };
-
-    // Create period submenu
-    let today_item = MenuItemBuilder::with_id("period_today", "Today").build(app)?;
-    let five_hrs_item = MenuItemBuilder::with_id("period_5hrs", "5 Hrs").build(app)?;
-    let one_hr_item = MenuItemBuilder::with_id("period_1hr", "1 Hr").build(app)?;
-    let week_item = MenuItemBuilder::with_id("period_week", "Week").build(app)?;
-
-    let period_submenu = SubmenuBuilder::new(app, format!("CCUsage - {}", current_period.display_name()))
-        .item(&today_item)
-        .item(&five_hrs_item)
-        .item(&one_hr_item)
-        .item(&week_item)
-        .build()?;
-
-    let mut menu_builder = MenuBuilder::new(app).item(&period_submenu).separator();
-
-    match usage_data {
-        Some(data) => {
-            let model_breakdowns = extract_model_breakdowns_from_data(&data, current_period);
-            
-            if model_breakdowns.is_empty() {
-                let no_data = MenuItemBuilder::with_id("no_data", "No usage data available")
-                    .build(app)?;
-                menu_builder = menu_builder.item(&no_data);
-            } else {
-                // Add model breakdowns - make them clickable/readable (not disabled)
-                for breakdown in &model_breakdowns {
-                    let model_name = format_model_name(&breakdown.model_name);
-                    let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
-                    let model_item = MenuItemBuilder::with_id(
-                        &format!("model_{}", breakdown.model_name),
-                        &cost_str,
-                    )
-                    .build(app)?; // Removed .enabled(false) to make them readable
-                    menu_builder = menu_builder.item(&model_item);
-                }
-            }
-        }
-        None => {
-            // No data available - show install link
-            let install_link = MenuItemBuilder::with_id("install_ccusage", "Install ccusage CLI")
-                .build(app)?;
-            menu_builder = menu_builder.item(&install_link);
-        }
-    }
-
-    menu_builder = menu_builder.separator();
-
-    let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
-        .build(app)?;
-    menu_builder = menu_builder.item(&refresh).separator();
-
-    // Check if autostart is enabled to set initial state
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    
-    let launch_on_startup = CheckMenuItemBuilder::with_id("launch_on_startup", "Launch on startup")
-        .checked(autostart_enabled)
-        .build(app)?;
-    
-    menu_builder = menu_builder.item(&launch_on_startup).separator();
-    
-    let quit = MenuItemBuilder::with_id("quit", "Quit")
-        .accelerator("Cmd+Q")
-        .build(app)?;
-    
-    menu_builder = menu_builder.item(&quit);
-
-    Ok(menu_builder.build()?)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -533,10 +420,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             toggle_autostart, 
-            is_autostart_enabled, 
-            fetch_usage_data,
-            get_cached_usage_data,
-            get_current_period
+            is_autostart_enabled
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -544,23 +428,9 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             
-            // Load saved settings and set initial period
-            let settings = load_settings();
-            {
-                let mut cache = USAGE_CACHE.lock().unwrap();
-                cache.current_period = match settings.current_period.as_str() {
-                    "today" => TimePeriod::Today,
-                    "5hrs" => TimePeriod::FiveHours,
-                    "1hr" => TimePeriod::OneHour,
-                    "week" => TimePeriod::Week,
-                    _ => TimePeriod::Today,
-                };
-            }
-            
-            
             // Build initial menu
             tauri::async_runtime::spawn(async move {
-                match build_menu_with_usage_data(&app_handle).await {
+                match build_menu_with_all_periods(&app_handle).await {
                     Ok(menu) => {
                         let tray = TrayIconBuilder::with_id("main")
                             .icon(
@@ -596,50 +466,14 @@ pub fn run() {
                                             None::<String>,
                                         );
                                     }
-                                    "refresh" | "period_today" | "period_5hrs" | "period_1hr" | "period_week" => {
+                                    "refresh" => {
                                         let app_handle = app_handle.clone();
-                                        let period = match event.id().as_ref() {
-                                            "period_today" => "today",
-                                            "period_5hrs" => "5hrs", 
-                                            "period_1hr" => "1hr",
-                                            "period_week" => "week",
-                                            _ => "today", // refresh uses current period
-                                        };
-                                        
                                         tauri::async_runtime::spawn(async move {
-                                            // Update period if different
-                                            if event.id().as_ref().starts_with("period_") {
-                                                let new_period = match period {
-                                                    "today" => TimePeriod::Today,
-                                                    "5hrs" => TimePeriod::FiveHours,
-                                                    "1hr" => TimePeriod::OneHour,
-                                                    "week" => TimePeriod::Week,
-                                                    _ => TimePeriod::Today,
-                                                };
-                                                
-                                                // Update cache
-                                                {
-                                                    let mut cache = USAGE_CACHE.lock().unwrap();
-                                                    cache.current_period = new_period;
-                                                }
-                                                
-                                                // Save settings to persist the selection
-                                                let settings = AppSettings {
-                                                    current_period: period.to_string(),
-                                                };
-                                                save_settings(&settings);
-                                            }
+                                            // Force refresh all data
+                                            refresh_all_data().await;
                                             
-                                            // Rebuild menu with fresh data (force refresh for period changes)
-                                            let build_result = if event.id().as_ref().starts_with("period_") {
-                                                // Force refresh when changing time periods
-                                                build_menu_with_usage_data_force_refresh(&app_handle).await
-                                            } else {
-                                                // Regular refresh for manual refresh button
-                                                build_menu_with_usage_data_force_refresh(&app_handle).await
-                                            };
-                                            
-                                            match build_result {
+                                            // Rebuild menu
+                                            match build_menu_with_all_periods(&app_handle).await {
                                                 Ok(new_menu) => {
                                                     if let Some(tray) = app_handle.tray_by_id("main") {
                                                         let _ = tray.set_menu(Some(new_menu));
