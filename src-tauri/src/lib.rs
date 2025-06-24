@@ -16,8 +16,6 @@ struct BlockData {
     start_time: String,
     #[serde(rename = "endTime")]
     end_time: String,
-    #[serde(rename = "actualEndTime")]
-    actual_end_time: Option<String>,
     #[serde(rename = "isActive")]
     is_active: bool,
     #[serde(rename = "tokenCounts")]
@@ -190,18 +188,16 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         
         menu_builder = menu_builder.separator();
         
-        // Session times - use actualEndTime if available, otherwise endTime
-        let session_end_str = block.actual_end_time.as_ref().unwrap_or(&block.end_time);
-        
-        let (start_time, end_time) = if let Ok(end_dt) = chrono::DateTime::parse_from_rfc3339(session_end_str) {
-            // Calculate start time as 5 hours before the end time
-            let start_dt = end_dt - chrono::Duration::hours(5);
-            let start = start_dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string();
-            let end = end_dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string();
-            (start, end)
-        } else {
-            ("Unknown".to_string(), "Unknown".to_string())
-        };
+        // Session times
+        let start_time = chrono::DateTime::parse_from_rfc3339(&block.start_time)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+            
+        let end_time = chrono::DateTime::parse_from_rfc3339(&block.end_time)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
             
         let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start_time))
             .enabled(false)
