@@ -70,7 +70,8 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Caches data to handle network issues
    - Auto-formats model names (claude-opus-4-20250514 → "Opus 4")
    - Shows costs formatted as currency ($9.51)
-   - Displays accurate session start and expiration times
+   - Uses `actualEndTime` for session end time
+   - Calculates session start time as 5 hours before the actual end time
    - Handles no active session gracefully
 
 6. **Smart Refresh & Performance**
