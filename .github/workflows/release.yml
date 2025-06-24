@@ -4,19 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., v1.0.0)'
+        description: 'Version to release (e.g., 1.0.0 - without v prefix)'
         required: true
         type: string
-      draft:
-        description: 'Create as draft release'
-        required: false
-        type: boolean
-        default: true
-      prerelease:
-        description: 'Mark as pre-release'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   create-release:
@@ -24,106 +14,86 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create-release.outputs.id }}
-      upload_url: ${{ steps.create-release.outputs.upload_url }}
+      release_id: ${{ steps.create-release.outputs.result }}
     steps:
       - uses: actions/checkout@v4
       
+      - name: Update version in Cargo.toml
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' src-tauri/Cargo.toml
+          
+      - name: Update version in tauri.conf.json
+        run: |
+          sed -i 's/"version": ".*"/"version": "${{ github.event.inputs.version }}"/' src-tauri/tauri.conf.json
+          
       - name: Create Release
         id: create-release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v7
         with:
-          tag_name: ${{ github.event.inputs.version }}
-          release_name: CCUsage macOS Menubar ${{ github.event.inputs.version }}
-          draft: ${{ github.event.inputs.draft }}
-          prerelease: ${{ github.event.inputs.prerelease }}
-          body: |
-            ## What's Changed
-            
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          result-encoding: string
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${{ github.event.inputs.version }}`,
+              name: `CCUsage macOS Menubar v${{ github.event.inputs.version }}`,
+              draft: true,
+              prerelease: false,
+              body: `## What's Changed
+
             <!-- Update this section with actual changes -->
-            
+
             ## Installation
-            
+
             ### macOS
-            1. Download the `.dmg` file for your architecture:
-               - Apple Silicon (M1/M2/M3): `*_aarch64.dmg`
-               - Intel: `*_x64.dmg`
+            1. Download the \`.dmg\` file
             2. Open the DMG and drag the app to your Applications folder
             3. The app requires Node.js to be installed for ccusage functionality
             
+            **Compatibility**: Apple Silicon (M1/M2/M3) Macs only
+
             ### Requirements
             - macOS 10.15 or later
             - Node.js (for ccusage CLI functionality)
-            
-            **Full Changelog**: https://github.com/${{ github.repository }}/compare/...v${{ github.event.inputs.version }}
+
+            **Note**: This build is not code-signed. You may need to right-click and select "Open" the first time you run it, or go to System Preferences > Security & Privacy to allow it to run.`
+            });
+            return data.id;
 
   build-tauri:
     needs: create-release
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: 'macos-latest' # ARM64
-            args: '--target aarch64-apple-darwin'
-          - platform: 'macos-latest' # x64
-            args: '--target x86_64-apple-darwin'
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Update version in Cargo.toml
+        run: |
+          sed -i '' 's/^version = ".*"/version = "${{ github.event.inputs.version }}"/' src-tauri/Cargo.toml
+          
+      - name: Update version in tauri.conf.json  
+        run: |
+          sed -i '' 's/"version": ".*"/"version": "${{ github.event.inputs.version }}"/' src-tauri/tauri.conf.json
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'yarn'
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: aarch64-apple-darwin
 
       - name: Install dependencies
         run: yarn install
 
-      - name: Build and Upload Release
+      - name: Build Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          releaseBody: 'See the release notes for details.'
-          releaseDraft: ${{ github.event.inputs.draft }}
-          prerelease: ${{ github.event.inputs.prerelease }}
-          args: ${{ matrix.args }}
-
-  publish-release:
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    needs: [create-release, build-tauri]
-    if: github.event.inputs.draft == 'false'
-    
-    steps:
-      - name: Publish Release
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: "${{ needs.create-release.outputs.release_id }}",
-              draft: false,
-              prerelease: ${{ github.event.inputs.prerelease }}
-            })
+          args: --target aarch64-apple-darwin

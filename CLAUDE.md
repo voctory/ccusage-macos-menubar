@@ -166,44 +166,31 @@ Quit
 
 ## GitHub Actions Release Workflow
 
-Two release workflows are available:
+The project includes a GitHub Actions workflow for automated releases.
 
-### 1. release.yml (Full Release with Code Signing)
-Requires Apple Developer certificates. To use:
-1. Set up the following GitHub secrets:
-   - `APPLE_CERTIFICATE`: Base64 encoded .p12 certificate
-   - `APPLE_CERTIFICATE_PASSWORD`: Certificate password
-   - `APPLE_SIGNING_IDENTITY`: Identity name from certificate
-   - `APPLE_ID`: Apple Developer account email
-   - `APPLE_PASSWORD`: App-specific password
-   - `APPLE_TEAM_ID`: Apple Developer Team ID
+### Using the Release Workflow
+No Apple Developer account required. To create a release:
 
-2. Trigger manually from Actions tab:
-   - Version: e.g., `v1.0.0`
-   - Draft: Create as draft (default: true)
-   - Pre-release: Mark as pre-release (default: false)
-
-### 2. release-simple.yml (Simple Release without Code Signing)
-No Apple Developer account required. To use:
-1. Go to Actions tab on GitHub
-2. Select "Release (Simple)" workflow
+1. Go to the Actions tab on GitHub
+2. Select "Release" workflow
 3. Click "Run workflow"
 4. Enter version (e.g., `1.0.0` - without v prefix)
 5. The workflow will:
    - Update version in Cargo.toml and tauri.conf.json
-   - Build for both ARM64 and x64 macOS
-   - Create a draft release with DMG files
+   - Build for Apple Silicon (ARM64) only
+   - Create a draft release with the DMG file
    - Note: Users will need to bypass Gatekeeper on first run
+
+### Requirements
+- Targets Apple Silicon Macs only (M1/M2/M3)
+- No code signing (users need to right-click → Open on first launch)
+- Requires Node.js installed on the user's machine for ccusage functionality
 
 ### Manual Release Process
 If you prefer to build and release manually:
 ```bash
-# Build for current architecture
-yarn tauri build
-
-# Build for specific architecture
-yarn tauri build -- --target aarch64-apple-darwin  # ARM64
-yarn tauri build -- --target x86_64-apple-darwin   # Intel
+# Build for Apple Silicon (ARM64)
+yarn tauri build -- --target aarch64-apple-darwin
 
 # Output will be in:
 # src-tauri/target/release/bundle/dmg/
