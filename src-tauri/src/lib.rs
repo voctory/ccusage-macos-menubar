@@ -266,57 +266,7 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
 
     let (today_data, five_hr_data, one_hr_data, week_data) = cache_data;
 
-    // Today section
-    let today_title = MenuItemBuilder::with_id("today_title", "Today")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&today_title);
-
-    if let Some(breakdowns) = today_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("today_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        let no_data = MenuItemBuilder::with_id("today_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // 5 Hour section
-    let five_hr_title = MenuItemBuilder::with_id("5hr_title", "5 Hr")
-        .enabled(false)
-        .build(app)?;
-    menu_builder = menu_builder.item(&five_hr_title);
-
-    if let Some(breakdowns) = five_hr_data {
-        for breakdown in &breakdowns {
-            let model_name = format_model_name(&breakdown.model_name);
-            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
-            let model_item = MenuItemBuilder::with_id(
-                &format!("5hr_{}", breakdown.model_name),
-                &cost_str,
-            )
-            .build(app)?;
-            menu_builder = menu_builder.item(&model_item);
-        }
-    } else {
-        let no_data = MenuItemBuilder::with_id("5hr_no_data", "No data available")
-            .build(app)?;
-        menu_builder = menu_builder.item(&no_data);
-    }
-
-    menu_builder = menu_builder.separator();
-
-    // 1 Hour section
+    // 1 Hour section (first)
     let one_hr_title = MenuItemBuilder::with_id("1hr_title", "1 Hr")
         .enabled(false)
         .build(app)?;
@@ -325,7 +275,10 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
     if let Some(breakdowns) = one_hr_data {
         for breakdown in &breakdowns {
             let model_name = format_model_name(&breakdown.model_name);
-            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
+            let input_k = breakdown.input_tokens / 1000;
+            let output_k = breakdown.output_tokens / 1000;
+            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+                model_name, breakdown.cost, input_k, output_k);
             let model_item = MenuItemBuilder::with_id(
                 &format!("1hr_{}", breakdown.model_name),
                 &cost_str,
@@ -341,7 +294,63 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
 
     menu_builder = menu_builder.separator();
 
-    // Week section
+    // 5 Hour section (second)
+    let five_hr_title = MenuItemBuilder::with_id("5hr_title", "5 Hr")
+        .enabled(false)
+        .build(app)?;
+    menu_builder = menu_builder.item(&five_hr_title);
+
+    if let Some(breakdowns) = five_hr_data {
+        for breakdown in &breakdowns {
+            let model_name = format_model_name(&breakdown.model_name);
+            let input_k = breakdown.input_tokens / 1000;
+            let output_k = breakdown.output_tokens / 1000;
+            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+                model_name, breakdown.cost, input_k, output_k);
+            let model_item = MenuItemBuilder::with_id(
+                &format!("5hr_{}", breakdown.model_name),
+                &cost_str,
+            )
+            .build(app)?;
+            menu_builder = menu_builder.item(&model_item);
+        }
+    } else {
+        let no_data = MenuItemBuilder::with_id("5hr_no_data", "No data available")
+            .build(app)?;
+        menu_builder = menu_builder.item(&no_data);
+    }
+
+    menu_builder = menu_builder.separator();
+
+    // Today section (third)
+    let today_title = MenuItemBuilder::with_id("today_title", "Today")
+        .enabled(false)
+        .build(app)?;
+    menu_builder = menu_builder.item(&today_title);
+
+    if let Some(breakdowns) = today_data {
+        for breakdown in &breakdowns {
+            let model_name = format_model_name(&breakdown.model_name);
+            let input_k = breakdown.input_tokens / 1000;
+            let output_k = breakdown.output_tokens / 1000;
+            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+                model_name, breakdown.cost, input_k, output_k);
+            let model_item = MenuItemBuilder::with_id(
+                &format!("today_{}", breakdown.model_name),
+                &cost_str,
+            )
+            .build(app)?;
+            menu_builder = menu_builder.item(&model_item);
+        }
+    } else {
+        let no_data = MenuItemBuilder::with_id("today_no_data", "No data available")
+            .build(app)?;
+        menu_builder = menu_builder.item(&no_data);
+    }
+
+    menu_builder = menu_builder.separator();
+
+    // Week section (fourth)
     let week_title = MenuItemBuilder::with_id("week_title", "Week")
         .enabled(false)
         .build(app)?;
@@ -350,7 +359,10 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
     if let Some(breakdowns) = week_data {
         for breakdown in &breakdowns {
             let model_name = format_model_name(&breakdown.model_name);
-            let cost_str = format!("{}: ${:.2}", model_name, breakdown.cost);
+            let input_k = breakdown.input_tokens / 1000;
+            let output_k = breakdown.output_tokens / 1000;
+            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+                model_name, breakdown.cost, input_k, output_k);
             let model_item = MenuItemBuilder::with_id(
                 &format!("week_{}", breakdown.model_name),
                 &cost_str,
@@ -467,22 +479,10 @@ pub fn run() {
                                         );
                                     }
                                     "refresh" => {
-                                        let app_handle = app_handle.clone();
                                         tauri::async_runtime::spawn(async move {
                                             // Force refresh all data
                                             refresh_all_data().await;
-                                            
-                                            // Rebuild menu
-                                            match build_menu_with_all_periods(&app_handle).await {
-                                                Ok(new_menu) => {
-                                                    if let Some(tray) = app_handle.tray_by_id("main") {
-                                                        let _ = tray.set_menu(Some(new_menu));
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("Failed to refresh menu: {}", e);
-                                                }
-                                            }
+                                            // Note: Menu will use fresh data on next open
                                         });
                                     }
                                     _ => {}
