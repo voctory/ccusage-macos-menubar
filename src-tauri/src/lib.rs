@@ -80,28 +80,127 @@ fn format_model_name(model_name: &str) -> String {
 }
 
 async fn fetch_session_data() -> Option<BlockData> {
-    let output = Command::new("npx")
-        .args(&[
-            "ccusage@latest", 
-            "blocks", 
-            "--json", 
-            "--active"
-        ])
-        .output()
-        .await
-        .ok()?;
+    // Try multiple approaches to find and run ccusage
+    let shell_commands = vec![
+        // First, try using the bundled ccusage via node_modules (works in both dev and prod)
+        ("sh", vec!["-c", "cd \"$(dirname \"$0\")\" && node node_modules/ccusage/dist/index.js blocks --json --active"]),
+        // Try from app Resources directory (macOS production build)
+        ("sh", vec!["-c", "cd \"$(dirname \"$0\")/../Resources\" && node ccusage-wrapper.js blocks --json --active"]),
+        // Try using npm script (development)
+        ("npm", vec!["run", "ccusage", "--", "blocks", "--json", "--active"]),
+        // Try direct node with ccusage from node_modules
+        ("node", vec!["node_modules/ccusage/dist/index.js", "blocks", "--json", "--active"]),
+        // Fallback to npx with locally installed ccusage
+        ("npx", vec!["ccusage", "blocks", "--json", "--active"]),
+        // Last resort: use npx with latest
+        ("sh", vec!["-c", "npx ccusage@latest blocks --json --active"]),
+        // Try with explicit PATH that includes common npm locations
+        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH npx ccusage@latest blocks --json --active"]),
+    ];
 
-    if !output.status.success() {
-        return None;
+    for (cmd, args) in shell_commands {
+        let output = Command::new(cmd)
+            .args(&args)
+            .output()
+            .await;
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                
+                // Try to parse the response
+                match serde_json::from_str::<BlocksResponse>(&stdout) {
+                    Ok(response) => {
+                        return response.blocks.into_iter().find(|block| block.is_active);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse ccusage response: {}", e);
+                        eprintln!("Response was: {}", stdout);
+                        continue;
+                    }
+                }
+            }
+            Ok(output) => {
+                eprintln!("ccusage command failed with status: {}", output.status);
+                eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+                continue;
+            }
+            Err(e) => {
+                eprintln!("Failed to execute command '{}': {}", cmd, e);
+                continue;
+            }
+        }
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: BlocksResponse = serde_json::from_str(&stdout).ok()?;
-    
-    response.blocks.into_iter().find(|block| block.is_active)
+    eprintln!("All attempts to fetch session data failed");
+    None
 }
 
 // Removed fetch_blocks_data and fetch_week_data functions as they are no longer needed
+
+async fn get_debug_info() -> String {
+    let mut debug_info = String::new();
+    
+    // Get PATH environment variable
+    debug_info.push_str("Environment:\n");
+    if let Ok(path) = std::env::var("PATH") {
+        debug_info.push_str(&format!("PATH: {}\n\n", path));
+    } else {
+        debug_info.push_str("PATH: (not set)\n\n");
+    }
+    
+    // Test which command
+    debug_info.push_str("Command availability:\n");
+    
+    let commands_to_test = vec![
+        ("which npx", "npx location"),
+        ("which node", "node location"),
+        ("which ccusage", "ccusage location"),
+        ("npx --version", "npx version"),
+        ("node --version", "node version"),
+        ("ccusage --version 2>&1 || echo 'not found'", "ccusage version"),
+    ];
+    
+    for (cmd, desc) in commands_to_test {
+        let output = Command::new("sh")
+            .args(&["-c", cmd])
+            .output()
+            .await;
+            
+        match output {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                debug_info.push_str(&format!("{}: {}\n", desc, stdout.trim()));
+            }
+            Ok(output) => {
+                debug_info.push_str(&format!("{}: command failed ({})\n", desc, output.status));
+            }
+            Err(e) => {
+                debug_info.push_str(&format!("{}: error - {}\n", desc, e));
+            }
+        }
+    }
+    
+    // Test ccusage
+    debug_info.push_str("\nTesting ccusage:\n");
+    let ccusage_output = Command::new("sh")
+        .args(&["-c", "npx ccusage@latest --version"])
+        .output()
+        .await;
+        
+    match ccusage_output {
+        Ok(output) => {
+            debug_info.push_str(&format!("Exit status: {}\n", output.status));
+            debug_info.push_str(&format!("stdout: {}\n", String::from_utf8_lossy(&output.stdout)));
+            debug_info.push_str(&format!("stderr: {}\n", String::from_utf8_lossy(&output.stderr)));
+        }
+        Err(e) => {
+            debug_info.push_str(&format!("Error executing ccusage: {}\n", e));
+        }
+    }
+    
+    debug_info
+}
 
 async fn refresh_session_data(app_handle: &tauri::AppHandle) {
     // Set refresh flag
@@ -142,9 +241,9 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
     menu_builder = menu_builder.item(&ccusage_header).separator();
 
     // Get data from cache
-    let active_block = {
+    let (active_block, has_attempted_fetch) = {
         let cache = SESSION_CACHE.lock().unwrap();
-        cache.active_block.clone()
+        (cache.active_block.clone(), cache.last_updated.is_some())
     };
 
     // Current session section
@@ -203,17 +302,39 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         }
         
         menu_builder = menu_builder.separator();
-    } else {
-        let no_session = MenuItemBuilder::with_id("no_session", "No active session in the last 5 hours")
+    } else if has_attempted_fetch {
+        // We've tried to fetch but got no data - likely ccusage is not available
+        let no_session = MenuItemBuilder::with_id("no_session", "No active session")
             .build(app)?;
-        menu_builder = menu_builder.item(&no_session).separator();
+        menu_builder = menu_builder.item(&no_session);
+        
+        // Add helpful error message
+        let error_msg = MenuItemBuilder::with_id("error_msg", "ccusage may not be installed")
+            .enabled(false)
+            .build(app)?;
+        menu_builder = menu_builder.item(&error_msg);
+        
+        let install_msg = MenuItemBuilder::with_id("install_msg", "Install: npm install -g ccusage")
+            .build(app)?;
+        menu_builder = menu_builder.item(&install_msg).separator();
+    } else {
+        // Still loading
+        let loading = MenuItemBuilder::with_id("loading", "Loading...")
+            .enabled(false)
+            .build(app)?;
+        menu_builder = menu_builder.item(&loading).separator();
     }
 
 
     // Refresh button
     let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
         .build(app)?;
-    menu_builder = menu_builder.item(&refresh).separator();
+    menu_builder = menu_builder.item(&refresh);
+
+    // Debug info (useful for troubleshooting)
+    let debug = MenuItemBuilder::with_id("debug", "Debug Info")
+        .build(app)?;
+    menu_builder = menu_builder.item(&debug).separator();
 
     // Quit
     let quit = MenuItemBuilder::with_id("quit", "Quit")
@@ -287,6 +408,12 @@ pub fn run() {
                                             None::<String>,
                                         );
                                     }
+                                    "install_msg" => {
+                                        let _ = tauri_plugin_opener::open_url(
+                                            "https://github.com/ryoppippi/ccusage#installation",
+                                            None::<String>,
+                                        );
+                                    }
                                     "quit" => {
                                         app.exit(0);
                                     }
@@ -301,6 +428,27 @@ pub fn run() {
                                                 if let Some(tray) = app_handle.try_state::<Arc<tauri::tray::TrayIcon>>() {
                                                     let _ = tray.set_menu(Some(new_menu));
                                                 }
+                                            }
+                                        });
+                                    }
+                                    "debug" => {
+                                        tauri::async_runtime::spawn(async move {
+                                            let debug_info = get_debug_info().await;
+                                            println!("=== DEBUG INFO ===\n{}\n==================", debug_info);
+                                            
+                                            // Also try to show in a dialog if possible
+                                            #[cfg(target_os = "macos")]
+                                            {
+                                                use std::process::Command as StdCommand;
+                                                let _ = StdCommand::new("osascript")
+                                                    .args(&[
+                                                        "-e",
+                                                        &format!(
+                                                            r#"display dialog "{}" buttons {{"OK"}} default button "OK" with title "CCUsage Debug Info""#,
+                                                            debug_info.replace("\"", "\\\"").replace("\n", "\\n")
+                                                        ),
+                                                    ])
+                                                    .spawn();
                                             }
                                         });
                                     }
