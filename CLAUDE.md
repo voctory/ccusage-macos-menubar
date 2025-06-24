@@ -69,11 +69,13 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Shows costs formatted as currency ($9.51)
    - Aggregates weekly data across all days
 
-6. **Persistence & Auto-Refresh**
+6. **Persistence & Smart Refresh**
    - **Time period selection persists** across app restarts
    - Settings saved to `~/Library/Application Support/ccusage-macos-menubar/settings.json`
-   - **Auto-refresh on menu open** - data updates when you click the menubar icon
-   - Manual refresh button still available
+   - **Smart refresh logic** - only fetches new data if cache is older than 5 minutes
+   - **Automatic refresh on time period change** - always fetches fresh data when switching periods
+   - **No menu interruption** - refreshing doesn't close the menu
+   - Manual refresh button forces immediate update
 
 7. **macOS Specific**
    - Uses `ActivationPolicy::Accessory` to hide from dock

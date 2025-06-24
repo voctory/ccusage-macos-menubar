@@ -1,11 +1,11 @@
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, CheckMenuItemBuilder, SubmenuBuilder},
-    tray::{TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState},
-    Manager, AppHandle,
+    tray::{TrayIconBuilder},
+    Manager,
 };
 use tauri_plugin_autostart::ManagerExt;
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, Arc};
+use std::sync::Mutex;
 use std::time::Instant;
 use tokio::process::Command;
 
@@ -90,14 +90,6 @@ impl TimePeriod {
         }
     }
 
-    fn menu_id(&self) -> &'static str {
-        match self {
-            TimePeriod::Today => "period_today",
-            TimePeriod::FiveHours => "period_5hrs",
-            TimePeriod::OneHour => "period_1hr",
-            TimePeriod::Week => "period_week",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,7 +109,6 @@ static USAGE_CACHE: Mutex<UsageCache> = Mutex::new(UsageCache {
     last_error: None,
 });
 
-static TRAY_HANDLE: Mutex<Option<Arc<AppHandle>>> = Mutex::new(None);
 
 fn get_settings_file_path() -> Result<std::path::PathBuf, String> {
     let config_dir = dirs::config_dir()
@@ -162,25 +153,6 @@ fn save_settings(settings: &AppSettings) {
     }
 }
 
-async fn refresh_menu_data() {
-    let app_handle = {
-        let tray_handle_guard = TRAY_HANDLE.lock().unwrap();
-        tray_handle_guard.as_ref().map(|h| h.as_ref().clone())
-    };
-    
-    if let Some(app_handle) = app_handle {
-        match build_menu_with_usage_data(&app_handle).await {
-            Ok(new_menu) => {
-                if let Some(tray) = app_handle.tray_by_id("main") {
-                    let _ = tray.set_menu(Some(new_menu));
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to refresh menu: {}", e);
-            }
-        }
-    }
-}
 
 #[tauri::command]
 async fn fetch_usage_data(period: String) -> Result<String, String> {
@@ -438,26 +410,48 @@ fn extract_model_breakdowns_from_data(data_str: &str, period: TimePeriod) -> Vec
 }
 
 async fn build_menu_with_usage_data(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
+    build_menu_with_usage_data_internal(app, false).await
+}
+
+async fn build_menu_with_usage_data_force_refresh(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
+    build_menu_with_usage_data_internal(app, true).await
+}
+
+async fn build_menu_with_usage_data_internal(app: &tauri::AppHandle, force_refresh: bool) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
     // Get current period from cache
     let current_period = {
         let cache = USAGE_CACHE.lock().unwrap();
         cache.current_period
     };
 
-    // Try to fetch fresh data first, fall back to cache
-    let usage_result = fetch_usage_data(match current_period {
-        TimePeriod::Today => "today",
-        TimePeriod::FiveHours => "5hrs",
-        TimePeriod::OneHour => "1hr",
-        TimePeriod::Week => "week",
-    }.to_string()).await;
-    
-    let usage_data = match usage_result {
-        Ok(data) => Some(data),
-        Err(_) => {
-            // Try to get cached data
-            get_cached_usage_data().await.unwrap_or(None)
+    // Check if we need to refresh (no data or data is older than 5 minutes)
+    let should_refresh = force_refresh || {
+        let cache = USAGE_CACHE.lock().unwrap();
+        match cache.last_updated {
+            Some(last_update) => last_update.elapsed().as_secs() > 300, // 5 minutes
+            None => true, // No data yet
         }
+    };
+
+    // Only fetch fresh data if needed, otherwise use cache
+    let usage_data = if should_refresh {
+        let usage_result = fetch_usage_data(match current_period {
+            TimePeriod::Today => "today",
+            TimePeriod::FiveHours => "5hrs",
+            TimePeriod::OneHour => "1hr",
+            TimePeriod::Week => "week",
+        }.to_string()).await;
+        
+        match usage_result {
+            Ok(data) => Some(data),
+            Err(_) => {
+                // Fall back to cached data if fresh fetch fails
+                get_cached_usage_data().await.unwrap_or(None)
+            }
+        }
+    } else {
+        // Use cached data
+        get_cached_usage_data().await.unwrap_or(None)
     };
 
     // Create period submenu
@@ -563,11 +557,6 @@ pub fn run() {
                 };
             }
             
-            // Store app handle for menu refreshing
-            {
-                let mut tray_handle = TRAY_HANDLE.lock().unwrap();
-                *tray_handle = Some(Arc::new(app_handle.clone()));
-            }
             
             // Build initial menu
             tauri::async_runtime::spawn(async move {
@@ -582,19 +571,6 @@ pub fn run() {
                             .icon_as_template(true)
                             .menu(&menu)
                             .show_menu_on_left_click(true)
-                            .on_tray_icon_event(|_tray, event| {
-                                if let TrayIconEvent::Click {
-                                    button: MouseButton::Left,
-                                    button_state: MouseButtonState::Up,
-                                    ..
-                                } = event
-                                {
-                                    // Auto-refresh data when menu is about to open
-                                    tauri::async_runtime::spawn(async move {
-                                        refresh_menu_data().await;
-                                    });
-                                }
-                            })
                             .on_menu_event({
                                 let app_handle = app_handle.clone();
                                 move |app, event| match event.id().as_ref() {
@@ -654,8 +630,16 @@ pub fn run() {
                                                 save_settings(&settings);
                                             }
                                             
-                                            // Rebuild menu with fresh data
-                                            match build_menu_with_usage_data(&app_handle).await {
+                                            // Rebuild menu with fresh data (force refresh for period changes)
+                                            let build_result = if event.id().as_ref().starts_with("period_") {
+                                                // Force refresh when changing time periods
+                                                build_menu_with_usage_data_force_refresh(&app_handle).await
+                                            } else {
+                                                // Regular refresh for manual refresh button
+                                                build_menu_with_usage_data_force_refresh(&app_handle).await
+                                            };
+                                            
+                                            match build_result {
                                                 Ok(new_menu) => {
                                                     if let Some(tray) = app_handle.tray_by_id("main") {
                                                         let _ = tray.set_menu(Some(new_menu));
