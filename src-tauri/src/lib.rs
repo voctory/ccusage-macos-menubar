@@ -52,15 +52,19 @@ struct CcusageResponse {
 }
 
 #[derive(Debug, Clone)]
-struct TodayData {
+struct SessionData {
     breakdowns: Option<Vec<ModelBreakdown>>,
     total_cost: f64,
+    session_start: Option<String>,
+    session_end: Option<String>,
     last_updated: Option<Instant>,
 }
 
-static TODAY_CACHE: Mutex<TodayData> = Mutex::new(TodayData {
+static SESSION_CACHE: Mutex<SessionData> = Mutex::new(SessionData {
     breakdowns: None,
     total_cost: 0.0,
+    session_start: None,
+    session_end: None,
     last_updated: None,
 });
 
@@ -90,7 +94,7 @@ fn format_model_name(model_name: &str) -> String {
     }
 }
 
-async fn fetch_session_data() -> Option<Vec<ModelBreakdown>> {
+async fn fetch_session_data() -> Option<(Vec<ModelBreakdown>, String, String)> {
     let output = Command::new("npx")
         .args(&[
             "ccusage@latest", 
@@ -114,6 +118,24 @@ async fn fetch_session_data() -> Option<Vec<ModelBreakdown>> {
     
     // Aggregate all blocks in the 5-hour session
     if let Some(blocks) = data["blocks"].as_array() {
+        if blocks.is_empty() {
+            return None;
+        }
+        
+        // Get session start and end times from first and last blocks
+        let first_block = &blocks[0];
+        let last_block = &blocks[blocks.len() - 1];
+        
+        let session_start = first_block["startTime"].as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+            
+        let session_end = last_block["endTime"].as_str()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        
         let mut aggregated: std::collections::HashMap<String, ModelBreakdown> = std::collections::HashMap::new();
         
         for block in blocks {
@@ -165,7 +187,7 @@ async fn fetch_session_data() -> Option<Vec<ModelBreakdown>> {
             }
         }
         
-        Some(aggregated.into_values().collect())
+        Some((aggregated.into_values().collect(), session_start, session_end))
     } else {
         None
     }
@@ -180,18 +202,21 @@ async fn refresh_session_data(app_handle: &tauri::AppHandle) {
     // Fetch 5-hour session data
     let session_data = fetch_session_data().await;
     
-    // Calculate total cost
-    let total_cost = if let Some(ref breakdowns) = session_data {
-        breakdowns.iter().map(|b| b.cost).sum()
+    // Calculate total cost and extract session times
+    let (total_cost, session_start, session_end) = if let Some((ref breakdowns, ref start, ref end)) = session_data {
+        let cost: f64 = breakdowns.iter().map(|b| b.cost).sum();
+        (cost, Some(start.clone()), Some(end.clone()))
     } else {
-        0.0
+        (0.0, None, None)
     };
 
     // Update cache
     {
-        let mut cache = TODAY_CACHE.lock().unwrap();
-        cache.breakdowns = session_data;
+        let mut cache = SESSION_CACHE.lock().unwrap();
+        cache.breakdowns = session_data.map(|(breakdowns, _, _)| breakdowns);
         cache.total_cost = total_cost;
+        cache.session_start = session_start;
+        cache.session_end = session_end;
         cache.last_updated = Some(Instant::now());
     }
     
@@ -218,9 +243,9 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
     menu_builder = menu_builder.item(&ccusage_header).separator();
 
     // Get data from cache
-    let today_data = {
-        let cache = TODAY_CACHE.lock().unwrap();
-        cache.breakdowns.clone()
+    let (session_data, session_start, session_end) = {
+        let cache = SESSION_CACHE.lock().unwrap();
+        (cache.breakdowns.clone(), cache.session_start.clone(), cache.session_end.clone())
     };
 
     // 5 Hr Session section
@@ -229,7 +254,7 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         .build(app)?;
     menu_builder = menu_builder.item(&session_title);
 
-    if let Some(breakdowns) = today_data {
+    if let Some(breakdowns) = session_data {
         for breakdown in &breakdowns {
             let model_name = format_model_name(&breakdown.model_name);
             let input_k = breakdown.input_tokens as f64 / 1000.0;
@@ -250,6 +275,17 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
     }
 
     menu_builder = menu_builder.separator();
+
+    // Session times
+    if let (Some(start), Some(end)) = (session_start, session_end) {
+        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Session start: {}", start))
+            .enabled(false)
+            .build(app)?;
+        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Session end: {}", end))
+            .enabled(false)
+            .build(app)?;
+        menu_builder = menu_builder.item(&session_start_item).item(&session_end_item).separator();
+    }
 
     // Launch on startup
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
@@ -321,7 +357,7 @@ pub fn run() {
                     // Only refresh if not already refreshing and we have initial data
                     if !IS_REFRESHING.load(Ordering::Relaxed) {
                         let should_refresh = {
-                            let cache = TODAY_CACHE.lock().unwrap();
+                            let cache = SESSION_CACHE.lock().unwrap();
                             cache.last_updated.is_some() // Only auto-refresh if we've refreshed at least once
                         };
                         if should_refresh {
