@@ -57,7 +57,22 @@ jobs:
             - macOS 10.15 or later
             - Node.js (for ccusage CLI functionality)
 
-            **Note**: This build is not code-signed. You may need to right-click and select "Open" the first time you run it, or go to System Preferences > Security & Privacy to allow it to run.`
+            **Important: First-time setup for unsigned app**
+            
+            If you see "ccusage-macos-menubar.app is damaged and can't be opened":
+            
+            1. Open Terminal
+            2. Run this command:
+               \`\`\`bash
+               xattr -cr /Applications/ccusage-macos-menubar.app
+               \`\`\`
+            3. The app should now open normally
+            
+            Alternative method:
+            - Right-click the app and select "Open"
+            - Click "Open" in the dialog that appears
+            
+            This only needs to be done once. The app is not actually damaged - macOS shows this message for unsigned apps downloaded from the internet.`
             });
             return data.id;
 

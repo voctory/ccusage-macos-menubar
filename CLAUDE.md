@@ -183,8 +183,23 @@ No Apple Developer account required. To create a release:
 
 ### Requirements
 - Targets Apple Silicon Macs only (M1/M2/M3)
-- No code signing (users need to right-click → Open on first launch)
+- No code signing (see "First Run Instructions" below)
 - Requires Node.js installed on the user's machine for ccusage functionality
+
+### First Run Instructions
+Since the app is not code-signed, macOS may show "app is damaged and can't be opened" when downloading from GitHub releases.
+
+**To fix this:**
+```bash
+# After moving the app to /Applications, run:
+xattr -cr /Applications/ccusage-macos-menubar.app
+```
+
+**Alternative method:**
+1. Right-click the app and select "Open"
+2. Click "Open" in the security dialog
+
+This only needs to be done once. The app is safe - macOS shows this for all unsigned apps downloaded from the internet.
 
 ### Manual Release Process
 If you prefer to build and release manually:
