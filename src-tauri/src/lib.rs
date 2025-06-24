@@ -107,8 +107,10 @@ static IS_REFRESHING: AtomicBool = AtomicBool::new(false);
 
 fn format_relative_time(elapsed: std::time::Duration) -> String {
     let secs = elapsed.as_secs();
-    if secs < 60 {
+    if secs < 10 {
         "just now".to_string()
+    } else if secs < 60 {
+        format!("{}s ago", secs)
     } else if secs < 3600 {
         let mins = secs / 60;
         format!("{}m ago", mins)
@@ -282,25 +284,25 @@ async fn refresh_all_data() {
 }
 
 async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
-    // Check if we need to refresh (no data or data is older than 5 minutes)
-    // But skip if a manual refresh is already in progress
-    let should_refresh = {
-        if IS_REFRESHING.load(Ordering::Relaxed) {
-            false // Don't refresh if already refreshing
-        } else {
-            let cache = ALL_DATA_CACHE.lock().unwrap();
-            match cache.last_updated {
-                Some(last_update) => last_update.elapsed().as_secs() > 300, // 5 minutes
-                None => true, // No data yet
-            }
-        }
-    };
-
-    if should_refresh {
-        refresh_all_data().await;
-    }
+    // No automatic refresh on menu open - only refresh via background task or manual refresh
 
     let mut menu_builder = MenuBuilder::new(app);
+
+    // CCUsage header with last updated time
+    let header_text = {
+        let cache = ALL_DATA_CACHE.lock().unwrap();
+        match cache.last_updated {
+            Some(last_update) => {
+                let elapsed = last_update.elapsed();
+                let relative_time = format_relative_time(elapsed);
+                format!("CCUsage (Refreshed {})", relative_time)
+            }
+            None => "CCUsage".to_string(),
+        }
+    };
+    let ccusage_header = MenuItemBuilder::with_id("ccusage_header", &header_text)
+        .build(app)?;
+    menu_builder = menu_builder.item(&ccusage_header).separator();
 
     // Get data from cache
     let cache_data = {
@@ -428,28 +430,17 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
 
     menu_builder = menu_builder.separator();
 
-    // Refresh button with last updated time
-    let refresh_text = {
-        let cache = ALL_DATA_CACHE.lock().unwrap();
-        match cache.last_updated {
-            Some(last_update) => {
-                let elapsed = last_update.elapsed();
-                let relative_time = format_relative_time(elapsed);
-                format!("Refresh ({})", relative_time)
-            }
-            None => "Refresh".to_string(),
-        }
-    };
-    let refresh = MenuItemBuilder::with_id("refresh", &refresh_text)
-        .build(app)?;
-    menu_builder = menu_builder.item(&refresh).separator();
-
     // Launch on startup
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     let launch_on_startup = CheckMenuItemBuilder::with_id("launch_on_startup", "Launch on startup")
         .checked(autostart_enabled)
         .build(app)?;
-    menu_builder = menu_builder.item(&launch_on_startup).separator();
+    menu_builder = menu_builder.item(&launch_on_startup);
+
+    // Refresh button (no timestamp here since it's in the header)
+    let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
+        .build(app)?;
+    menu_builder = menu_builder.item(&refresh).separator();
 
     // Quit
     let quit = MenuItemBuilder::with_id("quit", "Quit")
@@ -521,6 +512,9 @@ pub fn run() {
             });
 
             tauri::async_runtime::spawn(async move {
+                // Initial data refresh on app startup
+                refresh_all_data().await;
+                
                 match build_menu_with_all_periods(&app_handle).await {
                     Ok(menu) => {
                         let tray = TrayIconBuilder::with_id("main")
@@ -535,6 +529,12 @@ pub fn run() {
                             .on_menu_event({
                                 let _app_handle = app_handle.clone();
                                 move |app, event| match event.id().as_ref() {
+                                    "ccusage_header" => {
+                                        let _ = tauri_plugin_opener::open_url(
+                                            "https://github.com/ryoppippi/ccusage",
+                                            None::<String>,
+                                        );
+                                    }
                                     "quit" => {
                                         app.exit(0);
                                     }
