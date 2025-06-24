@@ -148,8 +148,8 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         cache.active_block.clone()
     };
 
-    // Current Session section
-    let session_title = MenuItemBuilder::with_id("session_title", "Current Session")
+    // Current session section
+    let session_title = MenuItemBuilder::with_id("session_title", "Current session")
         .enabled(false)
         .build(app)?;
     menu_builder = menu_builder.item(&session_title);
@@ -166,6 +166,23 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         let tokens_item = MenuItemBuilder::with_id("session_tokens", &tokens_str)
             .build(app)?;
         menu_builder = menu_builder.item(&cost_item).item(&tokens_item);
+        
+        // Session times
+        let start_time = chrono::DateTime::parse_from_rfc3339(&block.start_time)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+            
+        let end_time = chrono::DateTime::parse_from_rfc3339(&block.end_time)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+            
+        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start_time))
+            .build(app)?;
+        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Expires: {}", end_time))
+            .build(app)?;
+        menu_builder = menu_builder.item(&session_start_item).item(&session_end_item);
         
         // Models used
         if !block.models.is_empty() {
@@ -187,25 +204,6 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         }
         
         menu_builder = menu_builder.separator();
-        
-        // Session times
-        let start_time = chrono::DateTime::parse_from_rfc3339(&block.start_time)
-            .ok()
-            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-            
-        let end_time = chrono::DateTime::parse_from_rfc3339(&block.end_time)
-            .ok()
-            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-            
-        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start_time))
-            .enabled(false)
-            .build(app)?;
-        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Expires: {}", end_time))
-            .enabled(false)
-            .build(app)?;
-        menu_builder = menu_builder.item(&session_start_item).item(&session_end_item).separator();
     } else {
         let no_session = MenuItemBuilder::with_id("no_session", "No active session")
             .build(app)?;

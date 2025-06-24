@@ -44,10 +44,10 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - No window interface - pure menubar app
 
 2. **Current Session Display**
-   - **Current Session** shows the active 5-hour billing block
-   - **Cost** and **Token counts** (Input/Output) on separate lines
+   - **Current session** shows the active 5-hour billing block
+   - **Cost** and **Token counts** (Input/Output) displayed
+   - **Session times** ("Started" and "Expires") shown as regular menu items
    - **Models used** header with each model listed separately
-   - **Session times** showing "Started" and "Expires" times
    - **Total cost** displayed in the menubar (e.g., $9.51) when active session exists
    - **"No active session"** displayed when no active block
    - **Refresh** (manually update all data)
@@ -122,15 +122,14 @@ To verify the menubar behavior:
 ```
 CCUsage
 ────────────────
-Current Session
+Current session
 Cost: $17.59
 Tokens: In 6.5K / Out 5.5K
+Started: 10:00 PM
+Expires: 3:00 AM
 ────────────────
 Models used
 Opus 4
-────────────────
-Started: 10:00 PM
-Expires: 3:00 AM
 ────────────────
 ☑ Launch on startup
 Refresh
@@ -142,7 +141,7 @@ Quit
 ```
 CCUsage
 ────────────────
-Current Session
+Current session
 No active session
 ────────────────
 ☑ Launch on startup
