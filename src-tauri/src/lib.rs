@@ -64,50 +64,11 @@ static TODAY_CACHE: Mutex<TodayData> = Mutex::new(TodayData {
     last_updated: None,
 });
 
-// Settings for persisting user preferences
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AppSettings {
-    show_cost_in_menubar: bool,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            show_cost_in_menubar: true,
-        }
-    }
-}
+// Removed AppSettings as we now always show cost
 
 static IS_REFRESHING: AtomicBool = AtomicBool::new(false);
 
-fn get_settings_path() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("ccusage-menubar")
-        .join("settings.json")
-}
-
-fn load_settings() -> AppSettings {
-    let path = get_settings_path();
-    if path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Ok(settings) = serde_json::from_str(&contents) {
-                return settings;
-            }
-        }
-    }
-    AppSettings::default()
-}
-
-fn save_settings(settings: &AppSettings) -> Result<(), Box<dyn std::error::Error>> {
-    let path = get_settings_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let contents = serde_json::to_string_pretty(settings)?;
-    std::fs::write(path, contents)?;
-    Ok(())
-}
+// Removed settings functions as we now always show cost
 
 fn format_model_name(model_name: &str) -> String {
     match model_name {
@@ -129,9 +90,17 @@ fn format_model_name(model_name: &str) -> String {
     }
 }
 
-async fn fetch_today_data() -> Option<Vec<ModelBreakdown>> {
+async fn fetch_session_data() -> Option<Vec<ModelBreakdown>> {
     let output = Command::new("npx")
-        .args(&["ccusage@latest", "daily", "--json", "--breakdown"])
+        .args(&[
+            "ccusage@latest", 
+            "blocks", 
+            "--json", 
+            "--breakdown", 
+            "--recent",
+            "--session-length",
+            "5"  // 5 hour rolling session
+        ])
         .output()
         .await
         .ok()?;
@@ -141,22 +110,78 @@ async fn fetch_today_data() -> Option<Vec<ModelBreakdown>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: CcusageResponse = serde_json::from_str(&stdout).ok()?;
+    let data: serde_json::Value = serde_json::from_str(&stdout).ok()?;
     
-    response.daily.first().map(|day| day.model_breakdowns.clone())
+    // Aggregate all blocks in the 5-hour session
+    if let Some(blocks) = data["blocks"].as_array() {
+        let mut aggregated: std::collections::HashMap<String, ModelBreakdown> = std::collections::HashMap::new();
+        
+        for block in blocks {
+            // First try modelBreakdowns
+            if let Some(breakdowns) = block["modelBreakdowns"].as_array() {
+                for breakdown in breakdowns {
+                    let model_name = breakdown["modelName"].as_str().unwrap_or_default().to_string();
+                    let entry = aggregated.entry(model_name.clone()).or_insert(ModelBreakdown {
+                        model_name,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_creation_tokens: 0,
+                        cache_read_tokens: 0,
+                        cost: 0.0,
+                    });
+                    entry.input_tokens += breakdown["inputTokens"].as_u64().unwrap_or(0);
+                    entry.output_tokens += breakdown["outputTokens"].as_u64().unwrap_or(0);
+                    entry.cache_creation_tokens += breakdown["cacheCreationTokens"].as_u64().unwrap_or(0);
+                    entry.cache_read_tokens += breakdown["cacheReadTokens"].as_u64().unwrap_or(0);
+                    entry.cost += breakdown["cost"].as_f64().unwrap_or(0.0);
+                }
+            } else if let Some(models) = block["models"].as_array() {
+                // Fallback: distribute cost and tokens evenly among models
+                let cost_usd = block["costUSD"].as_f64().unwrap_or(0.0);
+                let cost_per_model = cost_usd / models.len() as f64;
+                
+                let token_counts = &block["tokenCounts"];
+                let input_tokens = token_counts["inputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
+                let output_tokens = token_counts["outputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
+                let cache_creation = token_counts["cacheCreationInputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
+                let cache_read = token_counts["cacheReadInputTokens"].as_u64().unwrap_or(0) / models.len() as u64;
+                
+                for model in models {
+                    let model_name = model.as_str().unwrap_or_default().to_string();
+                    let entry = aggregated.entry(model_name.clone()).or_insert(ModelBreakdown {
+                        model_name,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_creation_tokens: 0,
+                        cache_read_tokens: 0,
+                        cost: 0.0,
+                    });
+                    entry.input_tokens += input_tokens;
+                    entry.output_tokens += output_tokens;
+                    entry.cache_creation_tokens += cache_creation;
+                    entry.cache_read_tokens += cache_read;
+                    entry.cost += cost_per_model;
+                }
+            }
+        }
+        
+        Some(aggregated.into_values().collect())
+    } else {
+        None
+    }
 }
 
 // Removed fetch_blocks_data and fetch_week_data functions as they are no longer needed
 
-async fn refresh_today_data(app_handle: &tauri::AppHandle) {
+async fn refresh_session_data(app_handle: &tauri::AppHandle) {
     // Set refresh flag
     IS_REFRESHING.store(true, Ordering::Relaxed);
     
-    // Fetch today's data
-    let today_data = fetch_today_data().await;
+    // Fetch 5-hour session data
+    let session_data = fetch_session_data().await;
     
     // Calculate total cost
-    let total_cost = if let Some(ref breakdowns) = today_data {
+    let total_cost = if let Some(ref breakdowns) = session_data {
         breakdowns.iter().map(|b| b.cost).sum()
     } else {
         0.0
@@ -165,27 +190,19 @@ async fn refresh_today_data(app_handle: &tauri::AppHandle) {
     // Update cache
     {
         let mut cache = TODAY_CACHE.lock().unwrap();
-        cache.breakdowns = today_data;
+        cache.breakdowns = session_data;
         cache.total_cost = total_cost;
         cache.last_updated = Some(Instant::now());
     }
     
-    // Update tray title if enabled
-    let settings = load_settings();
-    if settings.show_cost_in_menubar {
-        if let Some(tray) = app_handle.tray_by_id("main") {
-            let title = if total_cost > 0.0 {
-                format!("${:.2}", total_cost)
-            } else {
-                String::new()
-            };
-            let _ = tray.set_title(Some(title));
-        }
-    } else {
-        // Clear title if disabled
-        if let Some(tray) = app_handle.tray_by_id("main") {
-            let _ = tray.set_title(None::<String>);
-        }
+    // Always update tray title with cost
+    if let Some(tray) = app_handle.tray_by_id("main") {
+        let title = if total_cost > 0.0 {
+            format!("${:.2}", total_cost)
+        } else {
+            String::new()
+        };
+        let _ = tray.set_title(Some(title));
     }
     
     // Clear refresh flag
@@ -206,11 +223,11 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         cache.breakdowns.clone()
     };
 
-    // Today section
-    let today_title = MenuItemBuilder::with_id("today_title", "Today")
+    // 5 Hr Session section
+    let session_title = MenuItemBuilder::with_id("session_title", "5 Hr Session")
         .enabled(false)
         .build(app)?;
-    menu_builder = menu_builder.item(&today_title);
+    menu_builder = menu_builder.item(&session_title);
 
     if let Some(breakdowns) = today_data {
         for breakdown in &breakdowns {
@@ -233,13 +250,6 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
     }
 
     menu_builder = menu_builder.separator();
-
-    // Show cost in menubar toggle
-    let settings = load_settings();
-    let show_cost = CheckMenuItemBuilder::with_id("show_cost_in_menubar", "Show cost in menubar")
-        .checked(settings.show_cost_in_menubar)
-        .build(app)?;
-    menu_builder = menu_builder.item(&show_cost);
 
     // Launch on startup
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
@@ -315,7 +325,7 @@ pub fn run() {
                             cache.last_updated.is_some() // Only auto-refresh if we've refreshed at least once
                         };
                         if should_refresh {
-                            refresh_today_data(&periodic_handle).await;
+                            refresh_session_data(&periodic_handle).await;
                         }
                     }
                 }
@@ -323,7 +333,7 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 // Initial data refresh on app startup
-                refresh_today_data(&app_handle).await;
+                refresh_session_data(&app_handle).await;
                 
                 match build_menu(&app_handle).await {
                     Ok(menu) => {
@@ -348,35 +358,6 @@ pub fn run() {
                                     "quit" => {
                                         app.exit(0);
                                     }
-                                    "show_cost_in_menubar" => {
-                                        let app_handle = app.app_handle().clone();
-                                        tauri::async_runtime::spawn(async move {
-                                            // Toggle the setting
-                                            let mut settings = load_settings();
-                                            settings.show_cost_in_menubar = !settings.show_cost_in_menubar;
-                                            let _ = save_settings(&settings);
-                                            
-                                            // Update tray title immediately
-                                            if let Some(tray) = app_handle.tray_by_id("main") {
-                                                if settings.show_cost_in_menubar {
-                                                    // Show current cost
-                                                    let cost = {
-                                                        let cache = TODAY_CACHE.lock().unwrap();
-                                                        cache.total_cost
-                                                    };
-                                                    let title = if cost > 0.0 {
-                                                        format!("${:.2}", cost)
-                                                    } else {
-                                                        String::new()
-                                                    };
-                                                    let _ = tray.set_title(Some(title));
-                                                } else {
-                                                    // Hide cost
-                                                    let _ = tray.set_title(None::<String>);
-                                                }
-                                            }
-                                        });
-                                    }
                                     "launch_on_startup" => {
                                         let app_handle = app.app_handle().clone();
                                         tauri::async_runtime::spawn(async move {
@@ -394,7 +375,7 @@ pub fn run() {
                                         let app_handle = app.app_handle().clone();
                                         tauri::async_runtime::spawn(async move {
                                             // Force refresh all data
-                                            refresh_today_data(&app_handle).await;
+                                            refresh_session_data(&app_handle).await;
                                             // Note: Menu will use fresh data on next open
                                         });
                                     }
