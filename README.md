@@ -1,7 +1,6 @@
-# Tauri + React + Typescript
+# ccusage-macos-menubar
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Small macOS menubar wrapping the [ccusage CLI](https://github.com/ryoppippi/ccusage) to show usage of the current Claude Code 5hr session. Built with [Tauri](https://v2.tauri.app/).
 
-## Recommended IDE Setup
+<img src="./screenshot.png" width="343">
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
