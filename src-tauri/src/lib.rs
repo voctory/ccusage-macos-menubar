@@ -205,17 +205,19 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         
         menu_builder = menu_builder.separator();
     } else {
-        let no_session = MenuItemBuilder::with_id("no_session", "No active session")
+        let no_session = MenuItemBuilder::with_id("no_session", "No active session in the last 5 hours")
             .build(app)?;
         menu_builder = menu_builder.item(&no_session).separator();
     }
 
-    // Launch on startup
+    // Launch on startup - only show if not already enabled
     let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-    let launch_on_startup = CheckMenuItemBuilder::with_id("launch_on_startup", "Launch on startup")
-        .checked(autostart_enabled)
-        .build(app)?;
-    menu_builder = menu_builder.item(&launch_on_startup);
+    if !autostart_enabled {
+        let launch_on_startup = CheckMenuItemBuilder::with_id("launch_on_startup", "Launch on startup")
+            .checked(false)
+            .build(app)?;
+        menu_builder = menu_builder.item(&launch_on_startup);
+    }
 
     // Refresh button
     let refresh = MenuItemBuilder::with_id("refresh", "Refresh")
