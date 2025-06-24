@@ -292,9 +292,9 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
     if let Some(breakdowns) = one_hr_data {
         for breakdown in &breakdowns {
             let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens / 1000;
-            let output_k = breakdown.output_tokens / 1000;
-            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+            let input_k = breakdown.input_tokens as f64 / 1000.0;
+            let output_k = breakdown.output_tokens as f64 / 1000.0;
+            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
                 model_name, breakdown.cost, input_k, output_k);
             let model_item = MenuItemBuilder::with_id(
                 &format!("1hr_{}", breakdown.model_name),
@@ -320,9 +320,9 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
     if let Some(breakdowns) = five_hr_data {
         for breakdown in &breakdowns {
             let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens / 1000;
-            let output_k = breakdown.output_tokens / 1000;
-            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+            let input_k = breakdown.input_tokens as f64 / 1000.0;
+            let output_k = breakdown.output_tokens as f64 / 1000.0;
+            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
                 model_name, breakdown.cost, input_k, output_k);
             let model_item = MenuItemBuilder::with_id(
                 &format!("5hr_{}", breakdown.model_name),
@@ -348,9 +348,9 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
     if let Some(breakdowns) = today_data {
         for breakdown in &breakdowns {
             let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens / 1000;
-            let output_k = breakdown.output_tokens / 1000;
-            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+            let input_k = breakdown.input_tokens as f64 / 1000.0;
+            let output_k = breakdown.output_tokens as f64 / 1000.0;
+            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
                 model_name, breakdown.cost, input_k, output_k);
             let model_item = MenuItemBuilder::with_id(
                 &format!("today_{}", breakdown.model_name),
@@ -376,9 +376,9 @@ async fn build_menu_with_all_periods(app: &tauri::AppHandle) -> Result<tauri::me
     if let Some(breakdowns) = week_data {
         for breakdown in &breakdowns {
             let model_name = format_model_name(&breakdown.model_name);
-            let input_k = breakdown.input_tokens / 1000;
-            let output_k = breakdown.output_tokens / 1000;
-            let cost_str = format!("{}: ${:.2} (In: {}K, Out: {}K)", 
+            let input_k = breakdown.input_tokens as f64 / 1000.0;
+            let output_k = breakdown.output_tokens as f64 / 1000.0;
+            let cost_str = format!("{}: ${:.2} (In: {:.1}K, Out: {:.1}K)", 
                 model_name, breakdown.cost, input_k, output_k);
             let model_item = MenuItemBuilder::with_id(
                 &format!("week_{}", breakdown.model_name),
