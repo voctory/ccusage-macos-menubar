@@ -147,19 +147,26 @@ fn format_model_name(model_name: &str) -> String {
 
 async fn fetch_session_data() -> (Option<BlockData>, bool) {
     // Try multiple approaches to find and run CLI
+    // Use login zsh so ~/.zprofile (Homebrew path, etc.) is loaded; avoid interactive ~/.zshrc
     let shell_commands = vec![
-        // Most likely to succeed: Try with explicit PATH that includes common npm locations
-        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH npx @ccusage/codex@latest daily --json"]),
-        // Try with explicit PATH for global ccusage
-        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH ccusage daily --json"]),
-        // Use shell to ensure proper PATH resolution (may work in dev environments)
-        ("sh", vec!["-c", "npx @ccusage/codex@latest daily --json"]),
-        // Try global ccusage if installed
+        ("/bin/zsh", vec![
+            "-l",
+            "-c",
+            "NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"; [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"; npm exec --yes @ccusage/codex@latest -- daily --json",
+        ]),
+        ("/bin/zsh", vec![
+            "-l",
+            "-c",
+            "NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"; [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"; npx @ccusage/codex@latest daily --json",
+        ]),
+        ("/bin/zsh", vec![
+            "-l",
+            "-c",
+            "NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"; [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"; ccusage daily --json",
+        ]),
+        // Fallbacks without login shell
         ("sh", vec!["-c", "ccusage daily --json"]),
-        // Try direct npx if in PATH
-        ("npx", vec!["@ccusage/codex@latest", "daily", "--json"]),
-        // Try direct ccusage command
-        ("codex", vec!["daily", "--json"]),
+        ("sh", vec!["-c", "npx @ccusage/codex@latest daily --json"]),
     ];
 
     for (cmd, args) in shell_commands {
@@ -251,27 +258,26 @@ async fn get_debug_info() -> String {
         debug_info.push_str("Default PATH: (not set)\n");
     }
     
-    // Define extended PATH that we actually use
-    let extended_path = "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH";
-    debug_info.push_str(&format!("Extended PATH used: {}\n\n", extended_path));
+    // Explain shell used for checks
+    debug_info.push_str("Checks run in login zsh; nvm sourced if present\n\n");
     
-    // Test commands with extended PATH
-    debug_info.push_str("Command availability (with extended PATH):\n");
+    // Test commands with login zsh + optional nvm sourcing
+    debug_info.push_str("Command availability (login zsh + nvm):\n");
     
     let commands_to_test = vec![
-        (format!("{} which npx", extended_path), "npx location"),
-        (format!("{} which node", extended_path), "node location"),
-        (format!("{} which codex", extended_path), "codex location"),
-        (format!("{} which ccusage", extended_path), "ccusage location"),
-        (format!("{} npx --version", extended_path), "npx version"),
-        (format!("{} node --version", extended_path), "node version"),
-        (format!("{} codex --version 2>&1 || echo 'not found'", extended_path), "codex version"),
-        (format!("{} ccusage --version 2>&1 || echo 'not found'", extended_path), "ccusage version"),
+        ("which npx".to_string(), "npx location"),
+        ("which node".to_string(), "node location"),
+        ("which ccusage".to_string(), "ccusage location"),
+        ("npx --version".to_string(), "npx version"),
+        ("node --version".to_string(), "node version"),
+        ("ccusage --version 2>&1 || echo 'not found'".to_string(), "ccusage version"),
     ];
     
+    let nvm_source = r#"NVM_DIR="${NVM_DIR:-$HOME/.nvm}"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh""#;
     for (cmd, desc) in commands_to_test {
-        let output = Command::new("sh")
-            .args(&["-c", &cmd])
+        let cmd_with_nvm = format!("{}; {}", nvm_source, cmd);
+        let output = Command::new("/bin/zsh")
+            .args(&["-l", "-c", &cmd_with_nvm])
             .output()
             .await;
             
@@ -296,8 +302,12 @@ async fn get_debug_info() -> String {
     
     // Test @ccusage/codex with extended PATH
     debug_info.push_str("\nTesting @ccusage/codex:\n");
-    let ccusage_output = Command::new("sh")
-        .args(&["-c", &format!("{} npx @ccusage/codex@latest --version", extended_path)])
+    let ccusage_cmd = format!(
+        r#"{}; npm exec --yes @ccusage/codex@latest -- --version || npx @ccusage/codex@latest --version"#,
+        nvm_source
+    );
+    let ccusage_output = Command::new("/bin/zsh")
+        .args(&["-l", "-c", &ccusage_cmd])
         .output()
         .await;
         
