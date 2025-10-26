@@ -6,15 +6,15 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
 - Runs without a visible window on startup
 - Shows only in the macOS menubar (system tray)
 - Does not appear in the dock
-- Displays real-time Claude Code usage data from ccusage CLI
-- Shows daily usage costs per model (Opus 4, Sonnet 4, etc.)
+- Displays real-time Claude Code usage data via `@ccusage/codex` (ccusage)
+- Shows daily usage costs per model
 
 ## Architecture
 
 ### Backend (Rust)
 - **src-tauri/src/lib.rs**: Main application logic
   - Sets up the system tray with dynamic menu items
-  - Integrates with ccusage CLI via `npx ccusage@latest daily --json --breakdown`
+  - Integrates with `@ccusage/codex` via `npx @ccusage/codex@latest daily --json`
   - Handles JSON parsing and data caching
   - Manages autostart functionality
   - Sets macOS activation policy to `Accessory` (no dock icon)
@@ -32,8 +32,8 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
   - Enables macOS private API for dock hiding
 
 ### Dependencies
-- **ccusage CLI**: Required external dependency
-  - Install with: `npm install -g ccusage` or use `npx ccusage@latest`
+- **@ccusage/codex CLI**: Required external dependency
+  - Install with: `npm i -g @ccusage/codex` or use `npx @ccusage/codex@latest`
   - Provides Claude Code usage analytics
 
 ## Key Features
@@ -43,19 +43,18 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Left-click shows menu with usage stats and options
    - No window interface - pure menubar app
 
-2. **Current Session Display**
-   - **Current session** shows the active 5-hour billing block
+2. **Today Display**
+   - **Today** shows aggregated usage for the current day
    - **Cost** and **Token counts** (Input/Output) displayed
-   - **Session times** ("Started" and "Expires") shown as regular menu items
    - **Models used** header with each model listed separately
-   - **Total cost** displayed in the menubar (e.g., $9.51) when active session exists
-   - **"No active session"** displayed when no active block
+   - **Total cost** displayed in the menubar (e.g., $0.00 when no usage)
+   - **"No usage today"** displayed when the day has no usage entry
    - **Refresh** (manually update all data)
    - **Launch on startup** (checkbox, toggles autostart)
    - **Quit** (with Cmd+Q shortcut)
 
 3. **Error States**
-   - **Install ccusage CLI** (clickable link to GitHub when ccusage not found)
+   - **Install @ccusage/codex CLI** (clickable link to npm when CLI not found)
    - **No usage data** (when no conversations today)
    - Graceful fallback to cached data on network issues
 
@@ -65,19 +64,18 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
    - Works across macOS, Windows, Linux
 
 5. **Data Integration**
-   - **Current Session**: `npx ccusage@latest blocks --json --active`
-   - Shows only the active 5-hour billing block
+   - **Today**: `npx @ccusage/codex@latest daily --json`
+   - Shows only today's aggregate usage
    - Caches data to handle network issues
-   - Auto-formats model names (claude-opus-4-20250514 → "Opus 4")
-   - Shows costs formatted as currency ($9.51)
-   - Displays accurate session start and expiration times
-   - Handles no active session gracefully
+   - Auto-formats model names where possible
+   - Shows costs formatted as currency
+   - Handles no-usage days gracefully (shows $0.00)
 
 6. **Smart Refresh & Performance**
-   - **Concurrent data fetching** - all time periods updated simultaneously using `tokio::join!`
-   - **Smart caching** - only fetches new data if cache is older than 5 minutes
+   - **Periodic refresh** every 2 minutes
+   - **Smart caching** to avoid unnecessary fetches
    - **No menu interruption** - menu stays open during refresh
-   - **Manual refresh** forces immediate update of all time periods
+   - **Manual refresh** button forces immediate update
    - **Fast startup** with cached data
 
 7. **macOS Specific**
@@ -87,11 +85,11 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
 ## Build & Run
 
 ### Prerequisites
-1. **Install ccusage CLI** (required for usage data):
+1. **Install @ccusage/codex CLI** (required for usage data):
    ```bash
-   npm install -g ccusage
+   npm i -g @ccusage/codex
    # OR use npx (no installation needed):
-   npx ccusage@latest --help
+   npx @ccusage/codex@latest --help
    ```
 
 ### Development
@@ -108,28 +106,26 @@ yarn tauri build
 ## Testing
 
 To verify the menubar behavior:
-1. **First time setup**: Ensure ccusage CLI works: `npx ccusage@latest daily --json`
+1. **First time setup**: Ensure CLI works: `npx @ccusage/codex@latest daily --json`
 2. **Run the app**: `yarn tauri dev` - no window should appear
 3. **Find the icon**: Look for the app icon in the macOS menubar
 4. **Test menu**: Left-click the icon to see usage data
 5. **Test refresh**: Click "Refresh" to update data
-6. **Test error state**: If ccusage isn't available, click "Install ccusage CLI"
+6. **Test error state**: If `@ccusage/codex` isn't available, click "Install @ccusage/codex CLI"
 7. **Verify dock**: The app shouldn't appear in the dock
 
 ### Menu Examples
 
-**Normal state** (with active session):
+**Normal state** (with usage today):
 ```
 CCUsage
 ────────────────
-Current session
+Today
 Cost: $17.59
 Tokens: In 6.5K / Out 5.5K
-Started: 10:00 PM
-Expires: 3:00 AM
 ────────────────
 Models used
-Opus 4
+GPT‑5 Codex
 ────────────────
 ☑ Launch on startup
 Refresh
@@ -137,12 +133,12 @@ Refresh
 Quit
 ```
 
-**No active session state**:
+**No usage today**:
 ```
 CCUsage
 ────────────────
-Current session
-No active session
+Today
+No usage today
 ────────────────
 ☑ Launch on startup
 Refresh
@@ -150,11 +146,10 @@ Refresh
 Quit
 ```
 
-**Benefits of Current Approach**:
-- **Accurate session times** - shows actual 5-hour billing block start/end
-- **Clear cost display** - total cost visible in menubar when session is active
-- **No confusion** - displays only the active session, not multiple blocks
-- **Graceful handling** - shows "No active session" when appropriate
+**Benefits**:
+- **Clear cost display** - total cost visible in menubar (shows $0.00 for no-usage days)
+- **Simple mental model** - focuses on today's usage only
+- **Graceful handling** - shows "No usage today" when appropriate
 - **Smooth user experience** - no lag or jitter
 
 ## Notes
@@ -184,7 +179,7 @@ No Apple Developer account required. To create a release:
 ### Requirements
 - Targets Apple Silicon Macs only (M1/M2/M3)
 - No code signing (see "First Run Instructions" below)
-- Requires Node.js installed on the user's machine for ccusage functionality
+- Requires Node.js installed on the user's machine for `@ccusage/codex` functionality
 
 ### First Run Instructions
 Since the app is not code-signed, macOS may show "app is damaged and can't be opened" when downloading from GitHub releases.

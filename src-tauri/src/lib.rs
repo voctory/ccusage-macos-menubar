@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
 use tokio::process::Command;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BlockData {
@@ -41,6 +42,63 @@ struct BlocksResponse {
     blocks: Vec<BlockData>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionsResponse {
+    sessions: Vec<BlockData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModelStats {
+    #[serde(rename = "isFallback")]
+    is_fallback: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DailyEntry {
+    date: String,
+    #[serde(rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(rename = "cachedInputTokens")]
+    cached_input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    output_tokens: u64,
+    #[serde(rename = "totalTokens")]
+    total_tokens: u64,
+    #[serde(rename = "costUSD")]
+    cost_usd: f64,
+    models: HashMap<String, ModelStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DailyResponse {
+    daily: Vec<DailyEntry>,
+}
+
+fn daily_to_block(entry: &DailyEntry) -> BlockData {
+    // Convert an aggregated daily entry into a BlockData shape used by UI
+    let token_counts = TokenCounts {
+        input_tokens: entry.input_tokens,
+        output_tokens: entry.output_tokens,
+        // We don't have separate creation vs read; attribute all to read for display purposes
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: entry.cached_input_tokens,
+    };
+
+    let mut models: Vec<String> = entry.models.keys().cloned().collect();
+    models.sort();
+
+    BlockData {
+        id: format!("daily-{}", entry.date),
+        // Not available in daily output
+        start_time: String::new(),
+        end_time: String::new(),
+        is_active: true,
+        token_counts,
+        cost_usd: entry.cost_usd,
+        models,
+    }
+}
+
 
 #[derive(Debug, Clone)]
 struct SessionData {
@@ -67,6 +125,8 @@ fn format_model_name(model_name: &str) -> String {
         "claude-sonnet-4-20250514" => "Sonnet 4".to_string(),
         "claude-3-5-sonnet-20241022" => "Sonnet 3.5".to_string(),
         "claude-3-haiku-20240307" => "Haiku".to_string(),
+        "gpt-5-codex" => "GPT-5 Codex".to_string(),
+        "gpt-5" => "GPT-5".to_string(),
         _ => {
             if model_name.contains("opus") {
                 "Opus".to_string()
@@ -74,6 +134,10 @@ fn format_model_name(model_name: &str) -> String {
                 "Sonnet".to_string()
             } else if model_name.contains("haiku") {
                 "Haiku".to_string()
+            } else if model_name.contains("gpt-5-codex") {
+                "GPT-5 Codex".to_string()
+            } else if model_name == "gpt-5" {
+                "GPT-5".to_string()
             } else {
                 model_name.to_string()
             }
@@ -82,20 +146,20 @@ fn format_model_name(model_name: &str) -> String {
 }
 
 async fn fetch_session_data() -> (Option<BlockData>, bool) {
-    // Try multiple approaches to find and run ccusage
+    // Try multiple approaches to find and run CLI
     let shell_commands = vec![
         // Most likely to succeed: Try with explicit PATH that includes common npm locations
-        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH npx ccusage@latest blocks --json --active"]),
+        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH npx @ccusage/codex@latest daily --json"]),
         // Try with explicit PATH for global ccusage
-        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH ccusage blocks --json --active"]),
+        ("sh", vec!["-c", "PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$HOME/.npm/bin:$HOME/.nvm/versions/node/*/bin:$HOME/.volta/bin:$PATH ccusage daily --json"]),
         // Use shell to ensure proper PATH resolution (may work in dev environments)
-        ("sh", vec!["-c", "npx ccusage@latest blocks --json --active"]),
+        ("sh", vec!["-c", "npx @ccusage/codex@latest daily --json"]),
         // Try global ccusage if installed
-        ("sh", vec!["-c", "ccusage blocks --json --active"]),
+        ("sh", vec!["-c", "ccusage daily --json"]),
         // Try direct npx if in PATH
-        ("npx", vec!["ccusage@latest", "blocks", "--json", "--active"]),
+        ("npx", vec!["@ccusage/codex@latest", "daily", "--json"]),
         // Try direct ccusage command
-        ("ccusage", vec!["blocks", "--json", "--active"]),
+        ("codex", vec!["daily", "--json"]),
     ];
 
     for (cmd, args) in shell_commands {
@@ -107,20 +171,56 @@ async fn fetch_session_data() -> (Option<BlockData>, bool) {
         match output {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                
-                // Try to parse the response
-                match serde_json::from_str::<BlocksResponse>(&stdout) {
-                    Ok(response) => {
-                        // ccusage is working! Return the active block (if any) and true
-                        let active_block = response.blocks.into_iter().find(|block| block.is_active);
-                        return (active_block, true);
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to parse ccusage response: {}", e);
-                        eprintln!("Response was: {}", stdout);
-                        continue;
+
+                // Try to parse the response with multiple schemas for compatibility
+                if let Ok(response) = serde_json::from_str::<DailyResponse>(&stdout) {
+                    // Prefer today's entry; if missing, show 0.00 for today
+                    let today = chrono::Local::now().format("%b %d, %Y").to_string();
+                    if let Some(entry) = response.daily.iter().find(|d| d.date == today) {
+                        let block = daily_to_block(entry);
+                        return (Some(block), true);
+                    } else {
+                        let zero = DailyEntry {
+                            date: today,
+                            input_tokens: 0,
+                            cached_input_tokens: 0,
+                            output_tokens: 0,
+                            total_tokens: 0,
+                            cost_usd: 0.0,
+                            models: HashMap::new(),
+                        };
+                        let block = daily_to_block(&zero);
+                        return (Some(block), true);
                     }
                 }
+                if let Ok(response) = serde_json::from_str::<SessionsResponse>(&stdout) {
+                    let active_block = response
+                        .sessions
+                        .into_iter()
+                        .find(|block| block.is_active);
+                    return (active_block, true);
+                }
+
+                if let Ok(response) = serde_json::from_str::<BlocksResponse>(&stdout) {
+                    let active_block = response
+                        .blocks
+                        .into_iter()
+                        .find(|block| block.is_active);
+                    return (active_block, true);
+                }
+
+                if let Ok(block) = serde_json::from_str::<BlockData>(&stdout) {
+                    return (Some(block), true);
+                }
+
+                if let Ok(blocks) = serde_json::from_str::<Vec<BlockData>>(&stdout) {
+                    let active_block = blocks.into_iter().find(|block| block.is_active);
+                    return (active_block, true);
+                }
+
+                eprintln!("Failed to parse CLI response with known schemas");
+                eprintln!("Response was: {}", stdout);
+                continue;
             }
             Ok(output) => {
                 eprintln!("ccusage command failed with status: {}", output.status);
@@ -161,9 +261,11 @@ async fn get_debug_info() -> String {
     let commands_to_test = vec![
         (format!("{} which npx", extended_path), "npx location"),
         (format!("{} which node", extended_path), "node location"),
+        (format!("{} which codex", extended_path), "codex location"),
         (format!("{} which ccusage", extended_path), "ccusage location"),
         (format!("{} npx --version", extended_path), "npx version"),
         (format!("{} node --version", extended_path), "node version"),
+        (format!("{} codex --version 2>&1 || echo 'not found'", extended_path), "codex version"),
         (format!("{} ccusage --version 2>&1 || echo 'not found'", extended_path), "ccusage version"),
     ];
     
@@ -192,10 +294,10 @@ async fn get_debug_info() -> String {
         }
     }
     
-    // Test ccusage with extended PATH
-    debug_info.push_str("\nTesting ccusage:\n");
+    // Test @ccusage/codex with extended PATH
+    debug_info.push_str("\nTesting @ccusage/codex:\n");
     let ccusage_output = Command::new("sh")
-        .args(&["-c", &format!("{} npx ccusage@latest --version", extended_path)])
+        .args(&["-c", &format!("{} npx @ccusage/codex@latest --version", extended_path)])
         .output()
         .await;
         
@@ -203,16 +305,16 @@ async fn get_debug_info() -> String {
         Ok(output) => {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                debug_info.push_str(&format!("ccusage version: {}\n", stdout.trim()));
+                debug_info.push_str(&format!("@ccusage/codex version: {}\n", stdout.trim()));
             } else {
-                debug_info.push_str("ccusage: not available (npx ccusage@latest failed)\n");
+                debug_info.push_str("@ccusage/codex: not available (npx @ccusage/codex@latest failed)\n");
                 if !output.stderr.is_empty() {
                     debug_info.push_str(&format!("Error: {}\n", String::from_utf8_lossy(&output.stderr).trim()));
                 }
             }
         }
         Err(e) => {
-            debug_info.push_str(&format!("Error executing ccusage: {}\n", e));
+            debug_info.push_str(&format!("Error executing @ccusage/codex: {}\n", e));
         }
     }
     
@@ -271,8 +373,8 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         (cache.active_block.clone(), cache.last_updated.is_some(), cache.ccusage_available)
     };
 
-    // Current session section
-    let session_title = MenuItemBuilder::with_id("session_title", "Current session")
+    // Today section
+    let session_title = MenuItemBuilder::with_id("session_title", "Today")
         .enabled(false)
         .build(app)?;
     menu_builder = menu_builder.item(&session_title);
@@ -290,22 +392,24 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
             .build(app)?;
         menu_builder = menu_builder.item(&cost_item).item(&tokens_item);
         
-        // Session times
+        // Session times (only if available)
         let start_time = chrono::DateTime::parse_from_rfc3339(&block.start_time)
             .ok()
-            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-            
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string());
         let end_time = chrono::DateTime::parse_from_rfc3339(&block.end_time)
             .ok()
-            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-            
-        let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start_time))
-            .build(app)?;
-        let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Expires: {}", end_time))
-            .build(app)?;
-        menu_builder = menu_builder.item(&session_start_item).item(&session_end_item);
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%I:%M %p").to_string());
+
+        if let Some(start) = start_time {
+            let session_start_item = MenuItemBuilder::with_id("session_start", &format!("Started: {}", start))
+                .build(app)?;
+            menu_builder = menu_builder.item(&session_start_item);
+        }
+        if let Some(end) = end_time {
+            let session_end_item = MenuItemBuilder::with_id("session_end", &format!("Expires: {}", end))
+                .build(app)?;
+            menu_builder = menu_builder.item(&session_end_item);
+        }
         
         // Models used
         if !block.models.is_empty() {
@@ -329,19 +433,19 @@ async fn build_menu(app: &tauri::AppHandle) -> Result<tauri::menu::Menu<tauri::W
         menu_builder = menu_builder.separator();
     } else if has_attempted_fetch {
         // We've tried to fetch
-        let no_session = MenuItemBuilder::with_id("no_session", "No active session")
+        let no_session = MenuItemBuilder::with_id("no_session", "No usage today")
             .build(app)?;
         menu_builder = menu_builder.item(&no_session);
         
         // Only show error if ccusage is actually not available
         if !ccusage_available {
             // Add helpful error message
-            let error_msg = MenuItemBuilder::with_id("error_msg", "ccusage may not be installed")
+            let error_msg = MenuItemBuilder::with_id("error_msg", "@ccusage/codex may not be installed")
                 .enabled(false)
                 .build(app)?;
             menu_builder = menu_builder.item(&error_msg);
             
-            let install_msg = MenuItemBuilder::with_id("install_msg", "Install: npm install -g ccusage")
+            let install_msg = MenuItemBuilder::with_id("install_msg", "Install: npm i -g @ccusage/codex")
                 .build(app)?;
             menu_builder = menu_builder.item(&install_msg);
         }
@@ -440,7 +544,7 @@ pub fn run() {
                                     }
                                     "install_msg" => {
                                         let _ = tauri_plugin_opener::open_url(
-                                            "https://github.com/ryoppippi/ccusage#installation",
+                                            "https://www.npmjs.com/package/@ccusage/codex",
                                             None::<String>,
                                         );
                                     }
