@@ -10,6 +10,6 @@ Example CLI used by the app:
 npx @ccusage/codex@latest daily --json
 ```
 
-<img src="./screenshot.png" width="343">
+<img src="./screenshot_codex.png" width="343">
 
 Built with [Tauri](https://v2.tauri.app/).
