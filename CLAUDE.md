@@ -6,7 +6,7 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
 - Runs without a visible window on startup
 - Shows only in the macOS menubar (system tray)
 - Does not appear in the dock
-- Displays real-time Claude Code usage data via `@ccusage/codex` (ccusage)
+- Displays real-time Codex usage data via `@ccusage/codex` (ccusage)
 - Shows daily usage costs per model
 
 ## Architecture
@@ -34,7 +34,7 @@ This is a minimal Tauri v2 application that runs as a menubar-only app on macOS.
 ### Dependencies
 - **@ccusage/codex CLI**: Required external dependency
   - Install with: `npm i -g @ccusage/codex` or use `npx @ccusage/codex@latest`
-  - Provides Claude Code usage analytics
+  - Provides Codex usage analytics
 
 ## Key Features
 
